@@ -1,0 +1,29 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# ── PyInstaller 构建产物 ──
+build/
+work_*/
+dist_new/
+*.spec
+!build_exe.bat
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 本地临时文件 ──
+_*.png
+_*.log
+*.tmp
