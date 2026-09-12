@@ -225,4 +225,10 @@ python src/launcher.py cli demo     # 沙箱演示，验证 限制→核验→�
 
 ---
 
+## 许可
+
+[MIT License](LICENSE) © 2026 Games8Th.Team
+
+---
+
 *Games8Th.Team · AppGuard v1.0.0*
