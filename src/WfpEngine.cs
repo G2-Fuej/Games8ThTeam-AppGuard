@@ -358,9 +358,19 @@ namespace Games8thTeamBlocker
             try
             {
                 Guid v4Key = MakeFilterKey(exePath, "v4");
-                IntPtr filt = IntPtr.Zero;
-                st = FwpmFilterGetByKey0(h, ref v4Key, out filt);
-                if (st == ERROR_SUCCESS && filt != IntPtr.Zero) FwpmFreeMemory0(ref filt);
+                IntPtr filt4 = IntPtr.Zero;
+                st = FwpmFilterGetByKey0(h, ref v4Key, out filt4);
+                if (st == ERROR_SUCCESS)
+                {
+                    if (filt4 != IntPtr.Zero) FwpmFreeMemory0(ref filt4);
+                    return true;
+                }
+
+                Guid v6Key = MakeFilterKey(exePath, "v6");
+                IntPtr filt6 = IntPtr.Zero;
+                st = FwpmFilterGetByKey0(h, ref v6Key, out filt6);
+                if (st == ERROR_SUCCESS && filt6 != IntPtr.Zero)
+                    FwpmFreeMemory0(ref filt6);
                 return st == ERROR_SUCCESS;
             }
             finally

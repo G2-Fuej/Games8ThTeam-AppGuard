@@ -135,11 +135,14 @@ g8tResolveProcessName(
     *processNameLen = 0;
     processName[0] = L'\0';
 
+    if (inFixedValues == NULL)
+        return STATUS_INVALID_PARAMETER;
+
     /* ALE_AUTH_CONNECT_V4 layer: the app id (process path) is in
      * field ALE_APP_ID. */
     appId = inFixedValues->incomingValue[FWPS_FIELD_ALE_AUTH_CONNECT_V4_ALE_APP_ID].value.byteBlob;
 
-    if (appId == NULL || appId->size == 0)
+    if (appId == NULL || appId->data == NULL || appId->size == 0)
         return STATUS_NOT_FOUND;
 
     appIdLen = appId->size;
@@ -247,7 +250,7 @@ g8tClassifyAuthConnectV4(
     UNREFERENCED_PARAMETER(flowContext);
     UNREFERENCED_PARAMETER(inMetaValues);
 
-    if (classifyOut == NULL)
+    if (classifyOut == NULL || inFixedValues == NULL)
         return;
 
     /* Permissive default：仅在引擎授予写权限时设置 action */
@@ -295,7 +298,7 @@ g8tClassifyAuthConnectV6(
     UNREFERENCED_PARAMETER(flowContext);
     UNREFERENCED_PARAMETER(inMetaValues);
 
-    if (classifyOut == NULL)
+    if (classifyOut == NULL || inFixedValues == NULL)
         return;
 
     /* Permissive default：仅在引擎授予写权限时设置 action */
@@ -303,7 +306,7 @@ g8tClassifyAuthConnectV6(
         classifyOut->actionType = FWP_ACTION_PERMIT;
 
     appId = inFixedValues->incomingValue[FWPS_FIELD_ALE_AUTH_CONNECT_V6_ALE_APP_ID].value.byteBlob;
-    if (appId == NULL || appId->size == 0)
+    if (appId == NULL || appId->data == NULL || appId->size == 0)
         return;
 
     RtlZeroMemory(processPath, sizeof(processPath));
@@ -487,6 +490,7 @@ g8tAddPath(PCWSTR path)
 {
     KIRQL irql;
     ULONG i;
+    NTSTATUS copyStatus;
     BOOLEAN added = FALSE;
 
     if (path == NULL || path[0] == L'\0')
@@ -507,8 +511,13 @@ g8tAddPath(PCWSTR path)
             return TRUE;
         }
     }
-    RtlStringCchCopyNW(g_blocked.Paths[g_blocked.Count], MAX_PATH_LEN,
-                       path, MAX_PATH_LEN - 1);
+    copyStatus = RtlStringCchCopyNW(g_blocked.Paths[g_blocked.Count],
+                                    MAX_PATH_LEN, path, MAX_PATH_LEN - 1);
+    if (!NT_SUCCESS(copyStatus))
+    {
+        KeReleaseSpinLock(&g_lock, irql);
+        return FALSE;
+    }
     g_blocked.Count++;
     added = TRUE;
     KeReleaseSpinLock(&g_lock, irql);
@@ -530,8 +539,12 @@ g8tRemovePath(PCWSTR path)
     {
         if (_wcsicmp(g_blocked.Paths[i], path) == 0)
         {
-            memmove(&g_blocked.Paths[i], &g_blocked.Paths[i+1],
-                    (g_blocked.Count - i - 1) * sizeof(g_blocked.Paths[0]));
+            if (i + 1 < g_blocked.Count)
+            {
+                RtlMoveMemory(&g_blocked.Paths[i], &g_blocked.Paths[i+1],
+                              (g_blocked.Count - i - 1) *
+                              sizeof(g_blocked.Paths[0]));
+            }
             g_blocked.Count--;
             removed = TRUE;
             break;
@@ -567,7 +580,9 @@ g8tDeviceControl(PDEVICE_OBJECT dev, PIRP irp)
     {
         case IOCTL_G8T_BLOCK_PATH:
         {
-            if (sysBuf != NULL && inLen >= sizeof(WCHAR))
+            if (sysBuf != NULL &&
+                inLen >= sizeof(WCHAR) &&
+                (inLen % sizeof(WCHAR)) == 0)
             {
                 WCHAR* path = (WCHAR*)sysBuf;
                 path[inLen / sizeof(WCHAR) - 1] = L'\0';
@@ -589,7 +604,9 @@ g8tDeviceControl(PDEVICE_OBJECT dev, PIRP irp)
         }
         case IOCTL_G8T_UNBLOCK_PATH:
         {
-            if (sysBuf != NULL && inLen >= sizeof(WCHAR))
+            if (sysBuf != NULL &&
+                inLen >= sizeof(WCHAR) &&
+                (inLen % sizeof(WCHAR)) == 0)
             {
                 WCHAR* path = (WCHAR*)sysBuf;
                 path[inLen / sizeof(WCHAR) - 1] = L'\0';

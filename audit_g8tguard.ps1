@@ -3,7 +3,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$root = "C:\Users\Administrator\Desktop\GPT\内部\飞连屏蔽插件"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $root "driver\g8tguard.c"
 $bat  = Join-Path $root "driver\build.bat"
 $vcx  = Join-Path $root "driver\g8tguard.vcxproj"

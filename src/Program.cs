@@ -377,6 +377,133 @@ namespace Games8thTeamBlocker
         }
     }
 
+    // ===================== TARGET DISCOVERY =====================
+    // The portable build can find common Feilian install locations without
+    // requiring a pre-generated config file. Discovery is intentionally
+    // name-based and only returns paths that exist on the current machine.
+    public static class TargetDiscovery
+    {
+        private static readonly string[] Hints = { "feilian", "飞连" };
+
+        public static List<string> FindFeilianTargets()
+        {
+            HashSet<string> found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            string[] roots =
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+            };
+
+            foreach (string root in roots)
+            {
+                if (!string.IsNullOrEmpty(root))
+                    ScanDirectories(root, 2, found);
+            }
+
+            ScanProcesses(found);
+            ScanServices(found);
+
+            List<string> result = new List<string>(found);
+            result.Sort(StringComparer.OrdinalIgnoreCase);
+            return result;
+        }
+
+        private static bool HasHint(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            string lower = value.ToLowerInvariant();
+            foreach (string hint in Hints)
+                if (lower.Contains(hint)) return true;
+            return false;
+        }
+
+        private static void AddExisting(string path, HashSet<string> found)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                path = Path.GetFullPath(path.Trim().Trim('"'));
+                if (File.Exists(path) || Directory.Exists(path))
+                    found.Add(path);
+            }
+            catch { }
+        }
+
+        private static void ScanDirectories(string root, int depth, HashSet<string> found)
+        {
+            if (depth < 0 || !Directory.Exists(root)) return;
+            string[] dirs;
+            try { dirs = Directory.GetDirectories(root); }
+            catch { return; }
+
+            foreach (string dir in dirs)
+            {
+                if (HasHint(Path.GetFileName(dir)))
+                    AddExisting(dir, found);
+                if (depth > 0)
+                    ScanDirectories(dir, depth - 1, found);
+            }
+        }
+
+        private static void ScanProcesses(HashSet<string> found)
+        {
+            try
+            {
+                using (System.Management.ManagementObjectSearcher searcher =
+                    new System.Management.ManagementObjectSearcher(
+                        "SELECT Name, ExecutablePath FROM Win32_Process WHERE ExecutablePath IS NOT NULL"))
+                {
+                    foreach (System.Management.ManagementObject mo in searcher.Get())
+                    {
+                        string name = mo["Name"] as string;
+                        string path = mo["ExecutablePath"] as string;
+                        if (HasHint(name) || HasHint(path))
+                            AddExisting(path, found);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static void ScanServices(HashSet<string> found)
+        {
+            try
+            {
+                using (System.Management.ManagementObjectSearcher searcher =
+                    new System.Management.ManagementObjectSearcher(
+                        "SELECT Name, DisplayName, PathName FROM Win32_Service"))
+                {
+                    foreach (System.Management.ManagementObject mo in searcher.Get())
+                    {
+                        string name = mo["Name"] as string;
+                        string display = mo["DisplayName"] as string;
+                        string rawPath = mo["PathName"] as string;
+                        if (!HasHint(name) && !HasHint(display) && !HasHint(rawPath))
+                            continue;
+                        AddExisting(ExtractExecutablePath(rawPath), found);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static string ExtractExecutablePath(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "";
+            string value = raw.Trim();
+            if (value.StartsWith("\""))
+            {
+                int end = value.IndexOf('"', 1);
+                return end > 1 ? value.Substring(1, end - 1) : value.Trim('"');
+            }
+            int split = value.IndexOf(' ');
+            return split > 0 ? value.Substring(0, split) : value;
+        }
+    }
+
     // ===================== COMPONENT ENGINE (exe-callable files) =====================
     // 文件夹目标内的组件识别：
     //   .exe      -> 防火墙规则封锁网络（可独立运行的进程）
@@ -698,6 +825,7 @@ namespace Games8thTeamBlocker
         private string configDir;
         private string configPath;
         private int vpnPort = 7890;
+        private int discoveredCount;
 
         public MainForm()
         {
@@ -723,12 +851,26 @@ namespace Games8thTeamBlocker
 
             log = new Logger(rtbLog, Path.Combine(configDir, "appguard.log"));
 
+            if (targets.Count == 0)
+            {
+                List<string> discovered = TargetDiscovery.FindFeilianTargets();
+                foreach (string path in discovered)
+                    targets.Add(new Target(path, true));
+                discoveredCount = discovered.Count;
+                if (discoveredCount > 0)
+                    SaveConfig();
+            }
+
             Banner();
 
             if (targets.Count == 0)
             {
-                log.Warn("未配置目标。请使用「选择程序」或「选择目录」添加要限制的软件。");
+                log.Warn("未发现飞连目标。请使用「选择程序」或「选择目录」添加限制目标。");
                 log.Warn("功能：封锁目标软件的全部网络请求（入站+出站）与组件访问，无需任何外部依赖。");
+            }
+            else if (discoveredCount > 0)
+            {
+                log.Ok("已自动发现 " + discoveredCount.ToString() + " 个飞连目标，可直接实施限制");
             }
 
             if (!admin)
@@ -1769,9 +1911,7 @@ namespace Games8thTeamBlocker
                     {
                         List<string> wfpPaths = new List<string>();
                         foreach (Target t in targets)
-                        {
-                            if (t.Enabled) wfpPaths.Add(t.Path_);
-                        }
+                            wfpPaths.Add(t.Path_);
                         int removed = WfpEngine.ClearAll(wfpPaths);
                         if (removed > 0)
                             log.Ok("用户态 WFP 限制已清除（" + removed.ToString() + " 条过滤器）");
@@ -1830,6 +1970,8 @@ namespace Games8thTeamBlocker
             {
                 log.Step("开始任务: 核验状态");
                 List<string> rules = Firewall.ListRules();
+                bool wfpAvailable = false;
+                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
                 int okC = 0, failC = 0, skip = 0;
                 foreach (Target t in targets)
                 {
@@ -1855,7 +1997,8 @@ namespace Games8thTeamBlocker
                             bool full = t.Strategy != "NET_OUT";
                             bool outOk = rules.Exists(x => string.Equals(x, Firewall.RuleName(file, "out"), StringComparison.OrdinalIgnoreCase));
                             bool inOk = !full || rules.Exists(x => string.Equals(x, Firewall.RuleName(file, "in"), StringComparison.OrdinalIgnoreCase));
-                            if (outOk && inOk) blockedN++;
+                            bool wfpOk = wfpAvailable && WfpEngine.IsBlockedPath(file);
+                            if ((outOk && inOk) || wfpOk) blockedN++;
                             else allBlocked = false;
                         }
                         else
@@ -1937,6 +2080,50 @@ namespace Games8thTeamBlocker
         [DllImport("kernel32.dll")]
         private static extern bool FreeConsole();
 
+        private static bool BlockExecutable(string path, bool wfpAvailable)
+        {
+            if (wfpAvailable)
+                return WfpEngine.Block(path);
+
+            return Firewall.AddBlockRule(path, "out") &&
+                   Firewall.AddBlockRule(path, "in");
+        }
+
+        private static void BlockPath(string path, bool wfpAvailable)
+        {
+            if (Directory.Exists(path))
+            {
+                List<string> files = Components.ScanFolder(path);
+                Console.WriteLine("目录目标: " + path + "（" + files.Count.ToString() + " 个组件）");
+                foreach (string file in files)
+                {
+                    if (Components.IsExe(file))
+                    {
+                        bool ok = BlockExecutable(file, wfpAvailable);
+                        Console.WriteLine((ok ? "  [OK] 封锁 " : "  [FAIL] 失败 ") + Path.GetFileName(file));
+                    }
+                    else
+                    {
+                        bool ok = Components.DenyAccess(file);
+                        Console.WriteLine((ok ? "  [OK] 剥夺权限 " : "  [FAIL] 失败 ") + Path.GetFileName(file));
+                    }
+                }
+                return;
+            }
+
+            Console.WriteLine("封锁: " + path);
+            if (Components.IsExe(path))
+            {
+                bool ok = BlockExecutable(path, wfpAvailable);
+                Console.WriteLine(ok ? "  [OK] 已封锁" : "  [FAIL] 失败");
+            }
+            else
+            {
+                bool ok = Components.DenyAccess(path);
+                Console.WriteLine(ok ? "  [OK] 已剥夺权限" : "  [FAIL] 失败");
+            }
+        }
+
         public static void Run(string[] args)
         {
             // winexe 程序默认无控制台：附加到父控制台(cmd)使输出正常显示
@@ -1969,49 +2156,32 @@ namespace Games8thTeamBlocker
             Console.WriteLine();
             if (args.Length < 2)
             {
-                Console.WriteLine("用法: Games8thBlocker.exe cli list|block|clear|verify|watch|guard");
+                Console.WriteLine("用法: Games8thBlocker.exe cli feilian|list|block|clear|verify|watch|guard");
                 return;
             }
             string action = args[1].ToLower();
             if (action == "block")
             {
                 if (args.Length < 3) { Console.WriteLine("用法: cli block <path>"); return; }
-                string p = args[2];
-                if (Directory.Exists(p))
+                bool wfpAvailable = false;
+                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
+                Console.WriteLine("网络封锁路径: " + (wfpAvailable ? "用户态 WFP" : "Windows 防火墙"));
+                BlockPath(args[2], wfpAvailable);
+            }
+            else if (action == "feilian" || action == "auto")
+            {
+                bool wfpAvailable = false;
+                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
+                List<string> discovered = TargetDiscovery.FindFeilianTargets();
+                Console.WriteLine("自动发现飞连目标: " + discovered.Count.ToString());
+                if (discovered.Count == 0)
                 {
-                    // scan all components in folder
-                    List<string> files = Components.ScanFolder(p);
-                    Console.WriteLine("目录目标: " + p + "（" + files.Count.ToString() + " 个组件）");
-                    foreach (string f in files)
-                    {
-                        if (Components.IsExe(f))
-                        {
-                            bool ok = Firewall.AddBlockRule(f, "out");
-                            bool okIn = Firewall.AddBlockRule(f, "in");
-                            Console.WriteLine((ok && okIn ? "  [OK] 封锁 " : "  [FAIL] 失败 ") + Path.GetFileName(f));
-                        }
-                        else
-                        {
-                            bool ok = Components.DenyAccess(f);
-                            Console.WriteLine((ok ? "  [OK] 剥夺权限 " : "  [FAIL] 失败 ") + Path.GetFileName(f));
-                        }
-                    }
+                    Console.WriteLine("  [WARN] 当前机器未发现飞连进程、服务或安装目录");
+                    return;
                 }
-                else
-                {
-                    Console.WriteLine("封锁: " + p);
-                    if (Components.IsExe(p))
-                    {
-                        bool ok = Firewall.AddBlockRule(p, "out");
-                        bool okIn = Firewall.AddBlockRule(p, "in");
-                        Console.WriteLine((ok && okIn) ? "  [OK] 已封锁" : "  [FAIL] 失败");
-                    }
-                    else
-                    {
-                        bool ok = Components.DenyAccess(p);
-                        Console.WriteLine(ok ? "  [OK] 已剥夺权限" : "  [FAIL] 失败");
-                    }
-                }
+                Console.WriteLine("网络封锁路径: " + (wfpAvailable ? "用户态 WFP" : "Windows 防火墙"));
+                foreach (string path in discovered)
+                    BlockPath(path, wfpAvailable);
             }
             else if (action == "list")
             {
@@ -2042,23 +2212,9 @@ namespace Games8thTeamBlocker
                     watchDirs.Add(p);
                     if (action == "watch")
                     {
-                        // also apply the restrictions first
-                        List<string> files = Components.ScanFolder(p);
-                        Console.WriteLine("目录目标: " + p + "（" + files.Count.ToString() + " 个组件）");
-                        foreach (string f in files)
-                        {
-                            if (Components.IsExe(f))
-                            {
-                                bool ok = Firewall.AddBlockRule(f, "out");
-                                bool okIn = Firewall.AddBlockRule(f, "in");
-                                Console.WriteLine((ok && okIn ? "  [OK] 封锁 " : "  [FAIL] 失败 ") + Path.GetFileName(f));
-                            }
-                            else
-                            {
-                                bool ok = Components.DenyAccess(f);
-                                Console.WriteLine((ok ? "  [OK] 剥夺权限 " : "  [FAIL] 失败 ") + Path.GetFileName(f));
-                            }
-                        }
+                        bool wfpAvailable = false;
+                        try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
+                        BlockPath(p, wfpAvailable);
                     }
                 }
                 else if (File.Exists(p))

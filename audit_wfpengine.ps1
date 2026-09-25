@@ -1,7 +1,7 @@
 ﻿param([int]$Round = 1)
 
 $ErrorActionPreference = "Stop"
-$root = "C:\Users\Administrator\Desktop\GPT\内部\飞连屏蔽插件"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $wfp  = Join-Path $root "src\WfpEngine.cs"
 $prog = Join-Path $root "src\Program.cs"
 $bat  = Join-Path $root "build.bat"
