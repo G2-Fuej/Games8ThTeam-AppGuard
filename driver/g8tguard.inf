@@ -1,0 +1,37 @@
+;
+; Games8thGuard.inf - Games8Th.Team kernel driver uninstallation info
+; NOTE: Driver install normally uses "sc create" for kernel drivers without INF.
+; This INF is provided for completeness / sample.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = NetworkFilter
+ClassGuid   = {b95d7c66-6e0e-4d18-aa69-e3ef6143a1ca}
+Provider    = %ProviderName%
+DriverVer   = 09/22/2026,1.0.0.0
+CatalogFile = Games8thGuard.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[DefaultInstall]
+OptionDesc = %DeviceName%
+CopyFiles   = @Games8thGuard.sys
+
+[DefaultInstall.Services]
+AddService = Games8thGuard,0x00000002,Service_Install
+
+[Service_Install]
+DisplayName   = Games8thGuard
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\Games8thGuard.sys
+
+[SourceDisksFiles]
+Games8thGuard.sys = 1
+
+[Strings]
+ProviderName = "Games8Th.Team"
+DeviceName   = "Games8thGuard kernel driver"
