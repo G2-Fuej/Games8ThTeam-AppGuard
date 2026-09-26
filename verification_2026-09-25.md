@@ -165,3 +165,67 @@ ALE_APP_ID 转换、CFG/ASLR/NX、签名件防覆盖及 x64 CLI-only 构建。
 Windows 内核驱动必须以文件路径交给 SCM，因此运行时仍会将内嵌 SYS 安全释放
 到 ProgramData；这不要求用户另外携带驱动文件。`cli unload` 会停止并删除服务，
 随后删除释放文件。当前外层 EXE 和内嵌 SYS 的本机 Authenticode 状态均为 Valid。
+
+## 2026-09-26 CorpLink 专属发现修订
+
+用户确认飞连固定安装在 `C:\Program Files\CorpLink`。CLI 发现逻辑已收紧为：
+
+1. 仅以 `C:\Program Files\CorpLink` 为安装根目录；
+2. 递归收集该目录下真实存在的 `.exe`，不再把目录本身下发给驱动；
+3. 进程、服务和卸载注册表发现的路径必须位于该根目录内；
+4. 使用目录分隔边界判断，`CorpLink2`、Program Files (x86) 或其他目录不会被接受；
+5. 拒绝目录和 EXE 重解析点，避免链接越过固定根目录；
+6. 服务路径解析兼容未加引号的 `C:\Program Files\CorpLink\...\x.exe -arg`。
+
+本机环境检查：
+
+    C:\Program Files\CorpLink=False
+    DISCOVERED_TARGET_COUNT=0
+    TERMINAL_ADMIN=False
+    REAL_FEILIAN_RUNTIME=UNVERIFIED
+
+因此本次不能声称真实飞连发现、驱动加载或网络阻断已在新候选上完成。历史签名
+版本的管理员加载与 7890 端到端证据仍保留，但它们不包含本次 CorpLink 专属发现
+修改，不能冒充本次运行验证。
+
+临时 x64 单 EXE 编译已通过，使用与 `build.bat` 相同的三个源码输入和内嵌签名
+驱动资源，未覆盖仓库中的上一版已签名 EXE。路径边界反射测试结果：
+
+    C:\Program Files\CorpLink => True
+    C:\Program Files\CorpLink\client.exe => True
+    C:\Program Files\CorpLink2\client.exe => False
+    C:\Program Files (x86)\CorpLink\client.exe => False
+    C:\Program Files\Other\client.exe => False
+
+本次修改后重新从第 1 轮开始连续执行三轮审计：
+
+| 轮次 | WFP/集成 | 驱动静态 | 蓝屏风险 | 结果 |
+|---|---:|---:|---:|---|
+| 1 | 34/34 | 32/32 | 32/32 | CLEAN |
+| 2 | 34/34 | 32/32 | 32/32 | CLEAN |
+| 3 | 34/34 | 32/32 | 32/32 | CLEAN |
+
+新增 WFP/集成断言覆盖 CorpLink 固定根目录、路径边界、EXE-only 目标、进程/服务/
+注册表统一约束以及重解析点防护。CorpLink 根目录在本机不存在，因此真实飞连
+实例发现及屏蔽仍为 `UNVERIFIED`。
+
+## 2026-09-26 签名后管理员驱动链验证
+
+用户完成外层 EXE 签名后，本机 `Get-AuthenticodeSignature` 对正式候选、发布 EXE
+和根目录 EXE 均返回 `Valid`，签名者为科云（上海）信息技术有限公司。三者
+SHA-256 一致：
+
+    12624E33EE2E47B3578717F920E4532734EAA03B5D85A8B4265DC94678628267
+
+`package_release.ps1 -SkipBuild` 已生成正式 EXE 和 SHA-256 文件。
+`production_corplink_signed_e2e_20260926.log` 记录了管理员上下文测试：
+
+- `ELEVATED=True`，加载模式为内嵌驱动资源；
+- 服务进入 `RUNNING`，设备句柄可用，`QUERY_PATHS` 正常；
+- `C:\Windows\System32\notepad.exe` 路径写入后通过查询回读；
+- `cli list` 显示路径，随后 `cli clear` 回读为空，`cli unload` 清理服务及释放文件；
+- 所有命令退出码为 0，日志记录 `PRODUCTION_CHAIN_VERIFIED=True`。
+
+因此已真实验证本机管理员驱动加载、设备通信和路径规则生命周期；Notepad 是测试
+目标，不代表真实飞连网络阻断。`C:\Program Files\CorpLink` 不存在，真实飞连
+目标结果继续标记为 `UNVERIFIED`。未执行证书绕过、DSE 修改或 Secure Boot 修改。

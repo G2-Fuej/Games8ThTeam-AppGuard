@@ -12,7 +12,7 @@ namespace Games8thTeamBlocker
 {
     public static class Program
     {
-        private static readonly string[] FeilianHints = { "feilian", "飞连" };
+        private const string FeilianInstallRoot = @"C:\Program Files\CorpLink";
 
         [STAThread]
         public static void Main(string[] args)
@@ -338,56 +338,75 @@ namespace Games8thTeamBlocker
         private static List<string> DiscoverFeilianTargets()
         {
             HashSet<string> found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string[] roots =
-            {
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
-            };
-
-            foreach (string root in roots)
-            {
-                if (string.IsNullOrEmpty(root)) continue;
-                AddKnownLocations(root, found);
-                ScanDirectories(root, 3, found);
-            }
+            AddExecutablesUnder(FeilianInstallRoot, found);
             ScanProcesses(found);
             ScanServices(found);
             ScanUninstallRegistry(found);
             return CollapseTargets(found);
         }
 
-        private static void AddKnownLocations(string root, HashSet<string> found)
+        private static bool IsUnderFeilianInstallRoot(string path)
         {
-            string[] relatives =
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
             {
-                "Feilian", "飞连", "ByteDance\\Feilian", "Bytedance\\Feilian",
-                "Lark\\Feilian", "FeilianClient"
-            };
-            foreach (string relative in relatives) AddExisting(Path.Combine(root, relative), found);
+                string root = Path.GetFullPath(FeilianInstallRoot).TrimEnd('\\');
+                string candidate = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\');
+                return string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase) ||
+                       candidate.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
-        private static bool HasHint(string value)
-        {
-            if (string.IsNullOrEmpty(value)) return false;
-            string lower = value.ToLowerInvariant();
-            foreach (string hint in FeilianHints)
-                if (lower.Contains(hint)) return true;
-            return false;
-        }
-
-        private static void AddExisting(string path, HashSet<string> found)
+        private static void AddExecutableTarget(string path, HashSet<string> found)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
             try
             {
                 string candidate = Path.GetFullPath(path.Trim().Trim('"'));
-                if (IsSelfPath(candidate)) return;
-                if (File.Exists(candidate) || Directory.Exists(candidate)) found.Add(candidate);
+                if (!IsUnderFeilianInstallRoot(candidate) || IsSelfPath(candidate)) return;
+                if (!File.Exists(candidate)) return;
+                if ((File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0) return;
+                if (!string.Equals(Path.GetExtension(candidate), ".exe",
+                                   StringComparison.OrdinalIgnoreCase)) return;
+                found.Add(candidate);
             }
             catch { }
+        }
+
+        private static void AddExecutablesUnder(string root, HashSet<string> found)
+        {
+            if (!IsUnderFeilianInstallRoot(root) || !Directory.Exists(root)) return;
+            try
+            {
+                if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) return;
+            }
+            catch { return; }
+
+            Stack<string> pending = new Stack<string>();
+            pending.Push(Path.GetFullPath(root));
+            while (pending.Count > 0)
+            {
+                string current = pending.Pop();
+                string[] files;
+                try { files = Directory.GetFiles(current, "*.exe", SearchOption.TopDirectoryOnly); }
+                catch { files = new string[0]; }
+                foreach (string file in files) AddExecutableTarget(file, found);
+
+                string[] directories;
+                try { directories = Directory.GetDirectories(current); }
+                catch { directories = new string[0]; }
+                foreach (string directory in directories)
+                {
+                    try
+                    {
+                        FileAttributes attributes = File.GetAttributes(directory);
+                        if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                        if (IsUnderFeilianInstallRoot(directory)) pending.Push(directory);
+                    }
+                    catch { }
+                }
+            }
         }
 
         private static bool IsSelfPath(string candidate)
@@ -402,19 +421,6 @@ namespace Games8thTeamBlocker
             return false;
         }
 
-        private static void ScanDirectories(string root, int depth, HashSet<string> found)
-        {
-            if (depth < 0 || !Directory.Exists(root)) return;
-            string[] directories;
-            try { directories = Directory.GetDirectories(root); }
-            catch { return; }
-            foreach (string directory in directories)
-            {
-                if (HasHint(Path.GetFileName(directory))) AddExisting(directory, found);
-                if (depth > 0) ScanDirectories(directory, depth - 1, found);
-            }
-        }
-
         private static void ScanProcesses(HashSet<string> found)
         {
             try
@@ -424,10 +430,8 @@ namespace Games8thTeamBlocker
                 {
                     foreach (ManagementObject item in searcher.Get())
                     {
-                        string name = item["Name"] as string;
                         string path = item["ExecutablePath"] as string;
-                        if (HasHint(name) || HasHint(Path.GetFileName(path)))
-                            AddExisting(path, found);
+                        AddExecutableTarget(path, found);
                     }
                 }
             }
@@ -443,13 +447,9 @@ namespace Games8thTeamBlocker
                 {
                     foreach (ManagementObject item in searcher.Get())
                     {
-                        string name = item["Name"] as string;
-                        string display = item["DisplayName"] as string;
                         string rawPath = item["PathName"] as string;
                         string executable = ExtractExecutablePath(rawPath);
-                        if (HasHint(name) || HasHint(display) ||
-                            HasHint(Path.GetFileName(executable)))
-                            AddExisting(executable, found);
+                        AddExecutableTarget(executable, found);
                     }
                 }
             }
@@ -478,10 +478,14 @@ namespace Games8thTeamBlocker
                                 using (RegistryKey child = parent.OpenSubKey(childName))
                                 {
                                     if (child == null) continue;
-                                    string display = child.GetValue("DisplayName") as string;
-                                    if (!HasHint(display)) continue;
-                                    AddExisting(child.GetValue("InstallLocation") as string, found);
-                                    AddExisting(ExtractExecutablePath(child.GetValue("DisplayIcon") as string), found);
+                                    string installLocation =
+                                        child.GetValue("InstallLocation") as string;
+                                    if (IsUnderFeilianInstallRoot(installLocation))
+                                        AddExecutablesUnder(installLocation, found);
+                                    AddExecutableTarget(
+                                        ExtractExecutablePath(
+                                            child.GetValue("DisplayIcon") as string),
+                                        found);
                                 }
                             }
                         }
@@ -502,8 +506,9 @@ namespace Games8thTeamBlocker
                 int end = value.IndexOf('"', 1);
                 return end > 1 ? value.Substring(1, end - 1) : value.Trim('"');
             }
-            int split = value.IndexOf(' ');
-            return split > 0 ? value.Substring(0, split) : value;
+            int executableEnd = value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+            if (executableEnd >= 0) return value.Substring(0, executableEnd + 4);
+            return value;
         }
 
         private static List<string> CollapseTargets(HashSet<string> found)

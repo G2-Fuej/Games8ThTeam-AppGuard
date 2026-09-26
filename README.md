@@ -2,7 +2,9 @@
 
 飞连专用 Windows CLI 工具。启动后显示居中的 Games8Th.Team / G8T
 双色终端标识 2 秒，自动
-发现飞连进程、服务、安装目录和组件，并针对真实路径实施屏蔽。网络限制强制使用 `Games8thGuard.sys`
+检测固定安装根目录 `C:\Program Files\CorpLink`，递归收集其中真实存在的
+`.exe`，并针对每个 EXE 的实际路径实施屏蔽。进程、服务和卸载注册表只作为补充
+发现来源，且其路径必须仍位于该根目录内。网络限制强制使用 `Games8thGuard.sys`
 内核驱动；用户态 WFP 和 Windows 防火墙代码仅用于结构/兼容性审计，
 不会编入 CLI 产品，也不会作为运行时回退。
 
@@ -33,7 +35,9 @@ powershell -ExecutionPolicy Bypass -File .\package_release.ps1 -SkipBuild
 拒绝签名无效的 EXE/驱动，并复核 EXE 内资源 SHA-256。发布包
 不能绕过 Secure Boot、DSE、WDAC/HVCI 或签名策略；其他机器未实际加载前
 仍应标记为 `UNVERIFIED`。
-程序仅保留 CLI 入口；无参数、`cli` 或 `cli auto` 都执行自动飞连检测和针对性屏蔽：
+程序仅保留 CLI 入口；无参数、`cli` 或 `cli auto` 都扫描
+`C:\Program Files\CorpLink` 下的 EXE 并执行针对性屏蔽。目录不存在或目录中没有
+可用 EXE 时输出 `UNVERIFIED`，不会写入驱动规则：
 
 ```bat
 Games8Th.Team-Feilian-CLI.exe
@@ -62,18 +66,19 @@ Games8Th.Team-Feilian-CLI.exe cli unload
 
 - `audit_g8tguard.ps1`：驱动静态审计，32 项断言。
 - `audit_bsod.ps1`：驱动蓝屏风险静态审计，32 项断言。
-- `audit_wfpengine.ps1`：WFP 结构、ALE_APP_ID、单 EXE 内嵌驱动、CLI-only x64 构建及“禁止运行时回退”集成审计，29 项断言。
+- `audit_wfpengine.ps1`：WFP 结构、ALE_APP_ID、单 EXE 内嵌驱动、CLI-only x64 构建、CorpLink 根目录边界、EXE-only 发现及“禁止运行时回退”集成审计，34 项断言。
 - `package_release.ps1`：生成单 EXE 和对应 SHA-256 文本。
 - `verification_2026-09-25.md`：本机三轮验证记录。
 
-本次验证中三套审计已连续三轮通过。最终签名驱动已在本机完成真实加载、
-设备/IOCTL、正式服务链和 `127.0.0.1:7890` 端到端阻断验证；本机未安装或
-运行飞连，因此真实飞连目标结果仍为 `UNVERIFIED`。
+本次验证中三套审计已连续三轮通过。管理员测试的签名驱动已在本机真实加载，
+并验证设备/IOCTL、Notepad 路径写入回读及服务清理链。本机未安装飞连，
+真实飞连实例的发现和屏蔽仍为 `UNVERIFIED`。
 
 EXE 清单使用 `requireAdministrator`。内置加载器验证资源哈希和 Authenticode、
 创建并启动服务，再通过设备句柄和 `QUERY_PATHS` 验证实际可用性。
-程序不会修改测试签名、Secure Boot 或其他代码完整性设置。当前最终外层 EXE
-Authenticode 状态为 `Valid`，签名者为科云（上海）信息技术有限公司；最终
-SHA-256 为 `DCDABDDE8EF813D3247A2F71025B071B5C82F8593FC9A9D0057FED1E2E288029`。
-内嵌 SYS 的 Authenticode 状态同样为 `Valid`。这些结果只证明本机签名校验；
+程序不会修改测试签名、Secure Boot 或其他代码完整性设置。本次外层 EXE
+Authenticode 状态为 `Valid`，签名者为科云（上海）信息技术有限公司；
+正式发布 SHA-256 为
+`12624E33EE2E47B3578717F920E4532734EAA03B5D85A8B4265DC94678628267`。
+内嵌 SYS 的 Authenticode 状态也为 `Valid`。这些结果只证明本机签名校验；
 其他机器的代码完整性、证书信任和撤销策略仍须实际加载验证。

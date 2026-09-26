@@ -77,6 +77,26 @@ Check "CLI/auto_discovery" (
     ($progText -match 'ScanServices\(found\)') -and
     ($progText -match 'ScanUninstallRegistry\(found\)')
 ) "CLI 自动飞连发现不完整"
+Check "CLI/corplink_root" (
+    ($progText -match 'FeilianInstallRoot\s*=\s*@"C:\\Program Files\\CorpLink"') -and
+    ($progText -match 'AddExecutablesUnder\(FeilianInstallRoot, found\)')
+) "CLI 未将 C:\Program Files\CorpLink 设为飞连专属发现根目录"
+Check "CLI/corplink_boundary" (
+    ($progText -match 'IsUnderFeilianInstallRoot\(string path\)') -and
+    ($progText -match 'candidate\.StartsWith\(root \+ "\\\\"')
+) "CorpLink 路径判断缺少目录边界，可能误收 CorpLink2"
+Check "CLI/exe_only_targets" (
+    ($progText -match 'Directory\.GetFiles\(current, "\*\.exe"') -and
+    ($progText -match 'Path\.GetExtension\(candidate\), "\.exe"') -and
+    (-not ($progText -match 'found\.Add\(.*Directory'))
+) "飞连发现结果未严格限制为真实 EXE"
+Check "CLI/corplink_sources_constrained" (
+    ([regex]::Matches($progText, 'AddExecutableTarget\(').Count -ge 4) -and
+    ($progText -match 'IsUnderFeilianInstallRoot\(installLocation\)')
+) "进程、服务或注册表发现未统一经过 CorpLink 根目录约束"
+Check "CLI/reparse_guard" (
+    ([regex]::Matches($progText, 'FileAttributes\.ReparsePoint').Count -ge 2)
+) "CorpLink 递归扫描缺少目录或 EXE 重解析点防护"
 Check "CLI/driver_autoload" (
     ($progText -match 'EmbeddedDriverInstaller\.EnsureLoaded\(\)') -and
     ($embedded -match 'GetManifestResourceStream') -and
