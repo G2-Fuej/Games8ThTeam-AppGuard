@@ -75,6 +75,13 @@ Check "CLI/self_exclude" (
     ($progText -match 'IsSelfPath\(candidate\)') -and
     ($progText -match 'Process\.GetCurrentProcess\(\)\.MainModule\.FileName')
 ) "CLI 自动发现未排除工具自身"
+Check "CLI/direct_test" (
+    ($progText -match 'RunDirectTest\(args\)') -and
+    ($progText -match 'File\.Exists\(target\)') -and
+    ($progText -match 'Path\.GetExtension\(target\)') -and
+    ($progText -match 'KernelDriver\.AddBlockedPath\(target\)') -and
+    ($progText -match 'KernelDriver\.ContainsBlockedPath\(target\)')
+) "CLI 测试模式未执行真实 EXE 校验、驱动下发或 QUERY_PATHS 回读"
 Check "BUILD/cli_only" (
     ($batText -match '/target:exe') -and
     ($batText -match 'src\\FeilianCli\.cs') -and

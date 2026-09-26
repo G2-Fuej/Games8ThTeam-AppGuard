@@ -78,6 +78,9 @@ Games8Th.Team 飞连专用 CLI 便携版（强制驱动模式）
 4. driver\Games8thGuard.sys 必须有当前 Windows 策略信任的有效签名。
    便携包不包含签名绕过，也不会修改 Secure Boot、DSE 或测试签名设置。
 5. 需要清理时，运行 Games8Th.Team-Feilian-CLI.exe cli clear。
+6. 跳过飞连检测直接测试指定软件：
+   Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
+   目标必须是当前存在的 EXE；只有驱动下发和 QUERY_PATHS 完整路径回读均成功才报告 OK。
 
 命令行：
   Games8Th.Team-Feilian-CLI.exe
@@ -85,6 +88,7 @@ Games8Th.Team 飞连专用 CLI 便携版（强制驱动模式）
   Games8Th.Team-Feilian-CLI.exe cli driver-status
   Games8Th.Team-Feilian-CLI.exe cli list
   Games8Th.Team-Feilian-CLI.exe cli clear
+  Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
 '@ | Set-Content -LiteralPath (Join-Path $stage 'portable-readme.txt') -Encoding UTF8
 
 $hashLines = Get-ChildItem -LiteralPath $stage -Recurse -File |

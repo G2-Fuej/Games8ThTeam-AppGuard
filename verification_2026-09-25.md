@@ -16,6 +16,8 @@
 - 便携发布主程序：`Games8Th.Team-Feilian-CLI.exe`。
 - 架构：最终 EXE 只编译 `src\FeilianCli.cs` 和 `src\KernelDriver.cs`，不包含 WinForms GUI、`Program.cs` 或 `WfpEngine.cs`。
 - 启动流程：显示 Games8Th.Team 控制台标识 2 秒，自动检测飞连进程、服务、常见安装目录及卸载注册表，再对真实路径实施驱动屏蔽。
+- 测试入口：`cli test "C:\Path\Target.exe"` 跳过飞连发现，直接对当前存在的指定 EXE 执行驱动加载、路径下发和 `QUERY_PATHS` 完整路径回读；任何环节缺少证据均为 `UNVERIFIED`。
+- 2026-09-26 参数实测：不存在的 EXE 被拒绝并返回退出码 2；现存 `C:\Windows\System32\notepad.exe` 能进入强制驱动链，但本机权限/签名条件不满足，正确返回 `UNVERIFIED` 和退出码 1，未误报屏蔽成功。
 
 ## 三轮连续审计
 
@@ -23,9 +25,9 @@
 
 | 轮次 | WFP/集成 | 驱动静态 | 蓝屏风险 | 结果 |
 |---|---:|---:|---:|---|
-| 1 | 26/26 | 27/27 | 30/30 | CLEAN |
-| 2 | 26/26 | 27/27 | 30/30 | CLEAN |
-| 3 | 26/26 | 27/27 | 30/30 | CLEAN |
+| 1 | 27/27 | 27/27 | 30/30 | CLEAN |
+| 2 | 27/27 | 27/27 | 30/30 | CLEAN |
+| 3 | 27/27 | 27/27 | 30/30 | CLEAN |
 
 审计覆盖：WFP 结构、运行时禁止回退、驱动服务生命周期、ALE V4/V6 classify、输入长度、非分页池、锁与 IRP 完成、卸载顺序和可疑蓝屏风险模式。
 

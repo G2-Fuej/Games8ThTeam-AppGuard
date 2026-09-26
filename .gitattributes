@@ -1,0 +1,2 @@
+# Preserve portable-package bytes so SHA256SUMS.txt stays valid in Git archives.
+release/Games8thBlocker-portable/** -text

@@ -36,11 +36,22 @@ Games8Th.Team-Feilian-CLI.exe cli
 Games8Th.Team-Feilian-CLI.exe cli auto
 ```
 
+跳过飞连发现、直接测试指定软件的强制驱动屏蔽链：
+
+```bat
+Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
+```
+
+测试目标必须是当前存在的 `.exe`，且不能是屏蔽器自身。只有驱动服务、
+设备句柄、IOCTL、路径下发和 `QUERY_PATHS` 完整路径回读全部成功时才输出
+`[OK]`；驱动未签名或无法加载时仍输出 `UNVERIFIED`。测试写入的路径可用
+`cli clear` 清理。
+
 ## 审计与验证
 
 - `audit_g8tguard.ps1`：驱动静态审计，27 项断言。
 - `audit_bsod.ps1`：驱动蓝屏风险静态审计，30 项断言。
-- `audit_wfpengine.ps1`：WFP 结构、CLI-only 构建、自身排除及“禁止运行时回退”集成审计，26 项断言。
+- `audit_wfpengine.ps1`：WFP 结构、CLI-only 构建、直接测试、自身排除及“禁止运行时回退”集成审计，27 项断言。
 - `package_release.ps1`：生成无需开发环境的便携发布目录和 SHA-256 清单。
 - `verification_2026-09-25.md`：本机三轮验证记录。
 

@@ -31,9 +31,11 @@ namespace Games8thTeamBlocker
                 ClearBlockedPaths();
             else if (action == "verify")
                 VerifyFeilianTargets();
+            else if (action == "test")
+                RunDirectTest(args);
             else
             {
-                Console.WriteLine("用法: Games8thBlocker.exe [cli] [auto|driver-status|list|clear|verify]");
+                PrintUsage();
                 Environment.ExitCode = 64;
             }
         }
@@ -54,6 +56,20 @@ namespace Games8thTeamBlocker
             if (string.Equals(args[0], "cli", StringComparison.OrdinalIgnoreCase))
                 return args.Length > 1 ? args[1].ToLowerInvariant() : "auto";
             return args[0].ToLowerInvariant();
+        }
+
+        private static string GetActionArgument(string[] args)
+        {
+            if (args == null || args.Length == 0) return "";
+            int start = string.Equals(args[0], "cli", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+            if (args.Length <= start) return "";
+            return string.Join(" ", args, start, args.Length - start).Trim().Trim('\"');
+        }
+
+        private static void PrintUsage()
+        {
+            Console.WriteLine("用法: Games8thBlocker.exe [cli] [auto|driver-status|list|clear|verify|test]");
+            Console.WriteLine("测试: Games8thBlocker.exe [cli] test \"C:\\Path\\Target.exe\"");
         }
 
         private static void ShowLogo()
@@ -123,6 +139,67 @@ namespace Games8thTeamBlocker
                 Console.WriteLine("[UNVERIFIED] 部分飞连目标未通过驱动下发/回读核验。");
                 Environment.ExitCode = 1;
             }
+        }
+
+        private static void RunDirectTest(string[] args)
+        {
+            Console.WriteLine("[TEST] 跳过飞连检测，直接测试指定软件的驱动屏蔽链。");
+            string rawTarget = GetActionArgument(args);
+            if (string.IsNullOrWhiteSpace(rawTarget))
+            {
+                Console.WriteLine("[UNVERIFIED] 未提供测试软件 EXE 路径。");
+                PrintUsage();
+                Environment.ExitCode = 64;
+                return;
+            }
+
+            string target;
+            try { target = Path.GetFullPath(rawTarget); }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[UNVERIFIED] 测试路径无效：" + ex.Message);
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            if (!File.Exists(target) ||
+                !string.Equals(Path.GetExtension(target), ".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("[UNVERIFIED] 测试目标必须是当前存在的 EXE：" + target);
+                Environment.ExitCode = 2;
+                return;
+            }
+            if (IsSelfPath(target))
+            {
+                Console.WriteLine("[UNVERIFIED] 拒绝将屏蔽器自身作为测试目标。");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            Console.WriteLine("  [TARGET] " + target);
+            Console.WriteLine("[1/2] 正在验证内核驱动...");
+            KernelDriver.DriverStatus status = EnsureDriverReady();
+            if (!status.IsLoaded)
+            {
+                Console.WriteLine("[UNVERIFIED] 驱动不可用：" + status.Summary);
+                Environment.ExitCode = 1;
+                return;
+            }
+            Console.WriteLine("[OK] " + status.Summary);
+
+            Console.WriteLine("[2/2] 正在下发并回读测试软件完整路径...");
+            bool ok = KernelDriver.AddBlockedPath(target) &&
+                      KernelDriver.ContainsBlockedPath(target);
+            if (ok)
+            {
+                Console.WriteLine("[OK] 测试目标已通过 QUERY_PATHS 完整路径回读核验：" + target);
+                return;
+            }
+
+            Console.WriteLine("[UNVERIFIED] 测试目标未通过驱动下发/回读核验：" + target);
+            if (!string.IsNullOrEmpty(KernelDriver.LastErrorMessage))
+                Console.WriteLine("  " + KernelDriver.LastErrorMessage);
+            Environment.ExitCode = 1;
         }
 
         private static KernelDriver.DriverStatus EnsureDriverReady()
