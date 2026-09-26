@@ -1,0 +1,14 @@
+Windows Registry Editor Version 5.00
+
+; Games8thGuard kernel service registration.
+; Import as Administrator only after placing the signed driver at:
+; %ProgramData%\Games8Th.Team\FeilianBlocker\Games8thGuard.sys
+; This file does not copy the driver, install a certificate, or bypass code integrity.
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Games8thGuard]
+"DisplayName"="Games8thGuard"
+"Description"="Games8Th.Team kernel network guard"
+"Type"=dword:00000001
+"Start"=dword:00000003
+"ErrorControl"=dword:00000001
+"ImagePath"="\\??\C:\\ProgramData\\Games8Th.Team\\FeilianBlocker\\Games8thGuard.sys"

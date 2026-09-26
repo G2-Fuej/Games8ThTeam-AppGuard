@@ -68,6 +68,7 @@ Games8Th.Team-Feilian-CLI.exe cli unload
 - `audit_bsod.ps1`：驱动蓝屏风险静态审计，32 项断言。
 - `audit_wfpengine.ps1`：WFP 结构、ALE_APP_ID、单 EXE 内嵌驱动、CLI-only x64 构建、CorpLink 根目录边界、EXE-only 发现及“禁止运行时回退”集成审计，34 项断言。
 - `package_release.ps1`：生成单 EXE 和对应 SHA-256 文本。
+- `Games8thGuard-service-template.reg`：为已放置的已签名 SYS 注册现有驱动服务；不复制驱动、不安装证书，也不修改代码完整性策略。
 - `verification_2026-09-25.md`：本机三轮验证记录。
 
 本次验证中三套审计已连续三轮通过。管理员测试的签名驱动已在本机真实加载，

@@ -229,3 +229,15 @@ SHA-256 一致：
 因此已真实验证本机管理员驱动加载、设备通信和路径规则生命周期；Notepad 是测试
 目标，不代表真实飞连网络阻断。`C:\Program Files\CorpLink` 不存在，真实飞连
 目标结果继续标记为 `UNVERIFIED`。未执行证书绕过、DSE 修改或 Secure Boot 修改。
+
+## 2026-09-27 跨机器服务注册表模板
+
+新增 `Games8thGuard-service-template.reg`。模板只注册现有 `Games8thGuard` 内核服务，
+使用 `Type=1`、`Start=3`、`ErrorControl=1`，并将 `ImagePath` 指向：
+
+    \??\C:\ProgramData\Games8Th.Team\FeilianBlocker\Games8thGuard.sys
+
+另一台机器必须先把相同且签名有效的 `Games8thGuard.sys` 放到该路径，再以管理员身份
+导入注册表并运行 CLI 的 `driver-status` 验证服务、设备句柄和 `QUERY_PATHS`。注册表
+文件本身不会复制 SYS、安装证书、创建信任链或绕过 Secure Boot、DSE、WDAC/HVCI；
+目标机器未实际验证前，驱动加载结果保持 `UNVERIFIED`。
