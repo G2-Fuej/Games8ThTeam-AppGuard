@@ -79,6 +79,8 @@ $unregisterAt = $unload.IndexOf("g8tUnregisterCallouts")
 Check "WFP/unload_order" (($closeAt -ge 0) -and ($unregisterAt -ge 0) -and ($closeAt -lt $unregisterAt)) "engine close must precede callout unregister"
 Check "WFP/handle_null_after_close" ($unload -match "g_engineHandle\s*=\s*NULL") "engine handle is not cleared after close"
 Check "WFP/failure_cleanup" ($code -match "cleanup_engine:[\s\S]*FwpmEngineClose0[\s\S]*g8tUnregisterCallouts") "registration failure cleanup is incomplete"
+Check "WFP/notify_callback" ($code -match "callout\.notifyFn\s*=\s*g8tCalloutNotify") "callout notifyFn is NULL or not assigned"
+Check "WFP/transaction_abort" ($code -match "transactionStarted[\s\S]*FwpmTransactionAbort0") "failed WFP transaction is not aborted"
 
 # 7. IRP completion and device cleanup.
 $deviceControl = FunctionBody "g8tDeviceControl"

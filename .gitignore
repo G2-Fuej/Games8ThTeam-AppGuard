@@ -4,6 +4,8 @@
 **/bin/
 **/__pycache__/
 *.tlog
+*.obj
+driver/build/Release/*-unsigned.sys
 *.log
 *.i64
 *.id0

@@ -27,6 +27,10 @@ $driverSource = Join-Path $root 'driver\build\Release\Games8thGuard.sys'
 if (-not (Test-Path -LiteralPath $driverSource)) {
     throw 'Games8thGuard.sys was not produced; refusing to create a driver-only package'
 }
+$driverSignature = Get-AuthenticodeSignature -LiteralPath $driverSource
+if ($driverSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Games8thGuard.sys Authenticode status is $($driverSignature.Status); refusing to package an unverified driver"
+}
 
 if (Test-Path -LiteralPath $stage) {
     Remove-Item -LiteralPath $stage -Recurse -Force
@@ -60,7 +64,17 @@ foreach ($file in @('load.bat', 'unload.bat')) {
     }
 }
 
-Copy-Item -LiteralPath $driverSource -Destination (Join-Path $stage 'driver\Games8thGuard.sys')
+$driverDestination = Join-Path $stage 'driver\Games8thGuard.sys'
+Copy-Item -LiteralPath $driverSource -Destination $driverDestination
+$driverSourceHash = (Get-FileHash -LiteralPath $driverSource -Algorithm SHA256).Hash
+$driverDestinationHash = (Get-FileHash -LiteralPath $driverDestination -Algorithm SHA256).Hash
+if ($driverSourceHash -ne $driverDestinationHash) {
+    throw "Games8thGuard.sys copy verification failed: source=$driverSourceHash destination=$driverDestinationHash"
+}
+$packagedSignature = Get-AuthenticodeSignature -LiteralPath $driverDestination
+if ($packagedSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Packaged Games8thGuard.sys signature status is $($packagedSignature.Status)"
+}
 
 @'
 @echo off
@@ -98,7 +112,33 @@ $hashLines = Get-ChildItem -LiteralPath $stage -Recurse -File |
         $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $relative"
     }
-$hashLines | Set-Content -LiteralPath (Join-Path $stage 'SHA256SUMS.txt') -Encoding ASCII
+$hashFile = Join-Path $stage 'SHA256SUMS.txt'
+$lineFeed = [char]10
+$hashText = ($hashLines -join $lineFeed) + $lineFeed
+[IO.File]::WriteAllText($hashFile, $hashText, [Text.ASCIIEncoding]::new())
+
+$hashFailures = 0
+foreach ($line in $hashLines) {
+    $parts = $line -split '  ', 2
+    if ($parts.Count -ne 2) {
+        $hashFailures++
+        continue
+    }
+    $expected = $parts[0]
+    $verifyPath = Join-Path $stage $parts[1]
+    if (-not (Test-Path -LiteralPath $verifyPath)) {
+        $hashFailures++
+        continue
+    }
+    $actual = (Get-FileHash -LiteralPath $verifyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        $hashFailures++
+    }
+}
+Write-Output ('HASH_FAILURES=' + $hashFailures)
+if ($hashFailures -ne 0) {
+    throw "Portable release SHA-256 verification failed for $hashFailures file(s)"
+}
 
 Write-Output "Portable release written to: $stage"
 Get-ChildItem -LiteralPath $stage -Recurse -File |

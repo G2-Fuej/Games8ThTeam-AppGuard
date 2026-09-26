@@ -35,6 +35,20 @@ Check "LIFE/save_on_success" $onSuccess "成功路径未保存 engine 句柄"
 Check "LIFE/no_unregister_on_success" (
     $code -match 'g_engineHandle\s*=\s*engineHandle;[\s\S]{0,200}return\s+STATUS_SUCCESS;'
 ) "成功路径疑似仍会注销 callout"
+Check "LIFE/notify_callback" (
+    ($code -match 'callout\.notifyFn\s*=\s*g8tCalloutNotify') -and
+    ($code -match 'g8tCalloutNotify\s*\(')
+) "FWPS_CALLOUT1 notifyFn 为空或通知回调缺失"
+Check "LIFE/custom_sublayer" (
+    ($code -match 'DEFINE_GUID\(G8T_SUBLAYER') -and
+    ($code -match 'FwpmSubLayerAdd0') -and
+    (([regex]::Matches($code, 'filter\.subLayerKey\s*=\s*G8T_SUBLAYER')).Count -ge 2)
+) "未创建/使用专用 WFP sublayer"
+Check "LIFE/transaction" (
+    ($code -match 'FwpmTransactionBegin0') -and
+    ($code -match 'FwpmTransactionCommit0') -and
+    ($code -match 'FwpmTransactionAbort0')
+) "WFP 管理对象未使用事务或失败路径未回滚"
 
 # ---- 3. unload ordering: engine close BEFORE callout unregister ----
 $unload = [regex]::Match($code, 'static\s+VOID\s*\r?\n\s*g8tUnload\([^)]*\)\s*\{[\s\S]*?\r?\n\}').Value
@@ -86,10 +100,15 @@ Check "IOCTL/outlen_guard" ($code -match 'outLen\s*>=\s*needed') "QUERY 输出�
 # ---- 10. build hardening ----
 Check "BUILD/gs_enabled" (($batText -match '/GS(?![-\w])') -and (-not ($batText -match '/GS-'))) `
     "build.bat 未启用 /GS 栈保护"
+Check "BUILD/cfg_nx_aslr" (
+    ($batText -match '/guard:cf') -and ($batText -match '/dynamicbase') -and
+    ($batText -match '/nxcompat') -and ($batText -match 'bufferoverflowfastfailk\.lib')
+) "build.bat 缺少 CFG、ASLR、NX 或内核栈保护支持库"
 Check "BUILD/spectre" (($vcxText -match '<SpectreMitigation>true</SpectreMitigation>') -and `
                       ($vcxText -match '<Driver_SpectreMitigation>true</Driver_SpectreMitigation>')) `
     "vcxproj Spectre 缓解未开启"
 Check "BUILD/working_dir" ($batText -match 'cd /d\s+"%~dp0\.\."') "driver\build.bat 未固定工作目录"
+Check "BUILD/no_signed_overwrite" ($batText -match 'Games8thGuard-unsigned\.sys') "驱动构建会覆盖已签名发布文件"
 
 # ---- 11. no dead code ----
 Check "DEAD/no_blockedparentpids" (-not ($code -match 'BlockedParentPids')) "残留 BlockedParentPids"

@@ -25,9 +25,10 @@ powershell -ExecutionPolicy Bypass -File .\package_release.ps1
 `Games8Th.Team-Feilian-CLI.exe`，并包含驱动、
 提权/加载脚本和校验清单。程序在驱动服务、设备句柄和 `QUERY_PATHS`
 三项均验证成功前不会写入网络限制，也不会回退到 WFP/Windows 防火墙。
-驱动必须具有被当前 Windows 代码完整性策略信任的有效签名；当前仓库中的
-历史 `Games8thGuard.sys` 若显示 `NotSigned`，加载结果必须标记为
-`UNVERIFIED`。发布包本身不能绕过 Secure Boot、DSE 或签名策略。
+驱动必须具有被当前 Windows 代码完整性策略信任的有效签名。打包脚本会
+拒绝 `Authenticode` 非 `Valid` 的驱动，并校验复制前后 SHA-256。发布包
+不能绕过 Secure Boot、DSE、WDAC/HVCI 或签名策略；其他机器未实际加载前
+仍应标记为 `UNVERIFIED`。
 程序仅保留 CLI 入口；无参数、`cli` 或 `cli auto` 都执行自动飞连检测和针对性屏蔽：
 
 ```bat
@@ -49,14 +50,15 @@ Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
 
 ## 审计与验证
 
-- `audit_g8tguard.ps1`：驱动静态审计，27 项断言。
-- `audit_bsod.ps1`：驱动蓝屏风险静态审计，30 项断言。
-- `audit_wfpengine.ps1`：WFP 结构、CLI-only 构建、直接测试、自身排除及“禁止运行时回退”集成审计，27 项断言。
+- `audit_g8tguard.ps1`：驱动静态审计，32 项断言。
+- `audit_bsod.ps1`：驱动蓝屏风险静态审计，32 项断言。
+- `audit_wfpengine.ps1`：WFP 结构、ALE_APP_ID、CLI-only x64 构建、直接测试、自身排除及“禁止运行时回退”集成审计，28 项断言。
 - `package_release.ps1`：生成无需开发环境的便携发布目录和 SHA-256 清单。
 - `verification_2026-09-25.md`：本机三轮验证记录。
 
-本次验证中三套审计需要连续三轮通过；本机未安装或运行飞连时，
-真实目标拦截结果保持 `UNVERIFIED`，不能用静态审计代替运行时证据。
+本次验证中三套审计已连续三轮通过。最终签名驱动已在本机完成真实加载、
+设备/IOCTL、正式服务链和 `127.0.0.1:7890` 端到端阻断验证；本机未安装或
+运行飞连，因此真实飞连目标结果仍为 `UNVERIFIED`。
 
 `driver\load.bat` 会自动请求管理员权限、验证 Authenticode、创建服务、
 启动服务，并调用 `cli driver-status` 验证设备句柄和 `QUERY_PATHS`。

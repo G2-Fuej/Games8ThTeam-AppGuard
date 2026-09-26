@@ -2,58 +2,127 @@
 
 更新时间：2026-09-26
 
-## 运行模式
+## 最终状态
 
-- 网络限制运行时后端：强制 `Games8thGuard.sys` 驱动。
-- 用户态 WFP/Windows 防火墙：仅保留为源码结构与集成审计对象，不是运行时回退。
-- VPN 端口记录：`7890`。
-- 工具目录检查：`C:\Program Files\GJ` 已检查；未发现可用的 VS/WDK、`signtool.exe` 或 `inf2cat.exe` 完整驱动构建/签名链。
+- 产品形态：飞连专用、CLI-only、x64、强制驱动模式。
+- 网络后端：Games8thGuard.sys WDM/WFP callout 驱动；无运行时防火墙/WFP 用户态回退。
+- VPN/代理测试端口：127.0.0.1:7890。
+- 最终驱动：driver\build\Release\Games8thGuard.sys。
+- 最终驱动 SHA-256：cfcb98ec34428375e8374721dbbf9b588cb22e93b652f01b9bcf23a531297c97。
+- Authenticode：Valid；签名者 CN=科云（上海）信息技术有限公司。
+- 本机真实加载与网络阻断：VERIFIED。
+- 真实飞连目标：本机未发现，因此飞连目标实测保持 UNVERIFIED。
+
+## 修复内容
+
+1. FWPS_CALLOUT1.notifyFn 不再为 NULL，修复实际加载返回
+   STATUS_FWP_NULL_POINTER (0xC022001C)。
+2. 新增专用 G8T_SUBLAYER，并用 WFP transaction 原子添加 sublayer、
+   callout 和 filter；失败路径执行 FwpmTransactionAbort0。
+3. 用户态调用 FwpmGetAppIdFromFileName0，把 DOS EXE 路径转换成 WFP
+   ALE_APP_ID。此前 IOCTL 回读虽成功，但 classify 元数据是设备路径，导致
+   真实连接未命中；修复后 7890 连接已真实阻断。
+4. CLI 明确构建为 x64，启用警告即错误。
+5. 驱动构建启用 /GS、/Qspectre、CFG、ASLR、NX、/W4 /WX，并链接
+   bufferoverflowfastfailk.lib。
+6. 正式驱动构建只输出 Games8thGuard-unsigned.sys，不会覆盖已签名发布件。
+7. 便携打包拒绝 Authenticode 非 Valid 的驱动，并校验复制前后 SHA-256。
 
 ## 用户态构建
 
-- 命令：`cmd.exe /d /c "build.bat <nul"`
-- 结果：成功生成 `Games8thBlocker.exe`，退出码 0。
-- 便携发布主程序：`Games8Th.Team-Feilian-CLI.exe`。
-- 架构：最终 EXE 只编译 `src\FeilianCli.cs` 和 `src\KernelDriver.cs`，不包含 WinForms GUI、`Program.cs` 或 `WfpEngine.cs`。
-- 启动流程：显示 Games8Th.Team 控制台标识 2 秒，自动检测飞连进程、服务、常见安装目录及卸载注册表，再对真实路径实施驱动屏蔽。
-- 测试入口：`cli test "C:\Path\Target.exe"` 跳过飞连发现，直接对当前存在的指定 EXE 执行驱动加载、路径下发和 `QUERY_PATHS` 完整路径回读；任何环节缺少证据均为 `UNVERIFIED`。
-- 2026-09-26 参数实测：不存在的 EXE 被拒绝并返回退出码 2；现存 `C:\Windows\System32\notepad.exe` 能进入强制驱动链，但本机权限/签名条件不满足，正确返回 `UNVERIFIED` 和退出码 1，未误报屏蔽成功。
+- 命令：cmd.exe /d /c "build.bat <nul"
+- 结果：PASS，退出码 0。
+- 产物：Games8thBlocker.exe。
+- 架构：x64 (8664)。
+- 子系统：Windows CUI。
+- 清单：requireAdministrator。
+- 编译输入：src\FeilianCli.cs、src\KernelDriver.cs；不包含 WinForms GUI、
+  src\Program.cs 或 src\WfpEngine.cs。
+
+## 驱动真实加载与 IOCTL 验证
+
+管理员原生加载日志：native_driver_final_hardened_elevated_20260926.log。
+
+    SeLoadDriverPrivilege=True
+    NtLoadDriver=0x00000000
+    CreateFile(\\.\G8TGuard)=成功
+    QUERY_PATHS=成功
+    路径写入=成功
+    精确路径回读=成功
+    路径移除=成功
+    最终清空=成功
+    NtUnloadDriver=0x00000000
+    临时注册表项已删除=True
+
+正式产品链日志：production_driver_e2e_20260926.log。
+
+    driver\load.bat=0
+    Games8thGuard 服务=RUNNING
+    cli driver-status=VERIFIED
+    cli clear=0，QUERY_PATHS 回读为空
+    driver\unload.bat=0
+    最终服务/注册表残留=无
+
+跳过飞连检测的正式测试入口日志：production_driver_direct_test_20260926.log。
+
+    cli test C:\Windows\System32\notepad.exe=0
+    cli list=0
+    回读路径=\device\harddiskvolume3\windows\system32\notepad.exe
+    cli clear=0
+    driver\unload.bat=0
+    最终服务/注册表残留=无
+
+## 7890 端到端网络阻断
+
+日志：native_driver_network_block_appid_elevated_20260926.log。
+
+    BASELINE_CONNECT=True
+    PATH_BIND=True
+    BLOCKED_CONNECT=False
+    RESTORED_CONNECT=True
+    NETWORK_BLOCK_VERIFIED=True
+
+测试使用独立 x64 客户端连接 127.0.0.1:7890：写入客户端的 WFP
+ALE_APP_ID 前连接成功；写入后新连接收到套接字访问拒绝；清空驱动路径后连接恢复。
+这证明最终结果不只是“规则/服务/路径名称存在”，而是 ALE V4 连接实际被阻断。
 
 ## 三轮连续审计
 
-每轮同时执行 `audit_wfpengine.ps1`、`audit_g8tguard.ps1` 和 `audit_bsod.ps1`。三套审计任一失败都应修复并从第 1 轮重新开始；本次没有失败，因此以下为连续一组有效轮次。
+最终有效审计日志：audit_3rounds_release_20260926.log。任一轮失败均须修复并
+从第 1 轮重新开始；最终有效的一组结果如下：
 
 | 轮次 | WFP/集成 | 驱动静态 | 蓝屏风险 | 结果 |
 |---|---:|---:|---:|---|
-| 1 | 27/27 | 27/27 | 30/30 | CLEAN |
-| 2 | 27/27 | 27/27 | 30/30 | CLEAN |
-| 3 | 27/27 | 27/27 | 30/30 | CLEAN |
+| 1 | 28/28 | 32/32 | 32/32 | CLEAN |
+| 2 | 28/28 | 32/32 | 32/32 | CLEAN |
+| 3 | 28/28 | 32/32 | 32/32 | CLEAN |
 
-审计覆盖：WFP 结构、运行时禁止回退、驱动服务生命周期、ALE V4/V6 classify、输入长度、非分页池、锁与 IRP 完成、卸载顺序和可疑蓝屏风险模式。
-
-## 驱动真实加载
-
-- 驱动文件：`driver\build\Release\Games8thGuard.sys`
-- SHA-256：`9d1411d75bbc21fd0b332e1d80287ec0c300304301567a0111ff3aa119b87c61`
-- Authenticode：`NotSigned`。
-- 结论：驱动真实加载为 `UNVERIFIED`。当前 Windows 代码完整性策略不信任该产物，不能声称服务已运行、设备句柄可用或 `QUERY_PATHS` 已响应。
-- `driver\load.bat` 会先检查管理员权限和签名，再验证服务 `RUNNING`、设备句柄及 `QUERY_PATHS`。它不会修改 Secure Boot、DSE、测试签名或实施签名绕过。
+新增覆盖包括：非空 notify callback、自定义 sublayer、WFP transaction/abort、
+ALE_APP_ID 转换、CFG/ASLR/NX、签名件防覆盖及 x64 CLI-only 构建。
 
 ## 飞连目标
 
-- 当前复核未发现飞连/Feilian 进程、服务、安装目录或目标 EXE。
-- 2026-09-26 无参数提权运行实测：Games8Th.Team 标识显示后自动进入检测，发现 0 个目标，输出 `UNVERIFIED`，退出码 2。
-- 首次实测发现项目目录名称包含“飞连”会误识别工具自身；已增加自身 EXE/基目录排除并收紧进程、服务匹配，修复后重新测试为 0 个目标。
-- 目标限制结果：`UNVERIFIED`。没有真实目标和已验证驱动，不能声称已完成拦截。
+2026-09-26 复核本机进程、服务及常见安装目录，结果为：
 
-## 规则与清理校验
+    FEILIAN_TARGETS=0
+    FEILIAN_RUNTIME_RESULT=UNVERIFIED
 
-- Windows 防火墙规则代码现在要求目标 EXE 真实存在，并读取应用过滤器确认规则绑定到完整 EXE 路径；仅规则名称存在不会判定成功。
-- 强制驱动路径下发后通过 `QUERY_PATHS` 回读确认；清理后也必须回读为空。
-- 无法连接驱动、目标不存在、权限不足或 IOCTL 失败均返回非零并标记 `UNVERIFIED`。
+因此不能声称已对真实飞连实例完成拦截。当前已真实验证的是驱动加载、IOCTL、
+正式服务链和独立测试客户端的 7890 网络阻断。
+
+## 兼容性边界
+
+- 当前签名件已在本机当前 Windows 代码完整性策略下真实加载成功。
+- 其他机器能否加载仍取决于其 Secure Boot、WDAC/HVCI、证书信任和撤销检查策略；
+  未在目标机器实测时应标记为 UNVERIFIED。
+- 工具不会修改测试签名、Secure Boot、DSE、WDAC 或 g_CiOptions。
 
 ## 便携包
 
-- `package_release.ps1` 要求驱动产物存在，并生成 `release\Games8thBlocker-portable`。
-- 便携包包含 EXE、驱动、加载/卸载脚本、说明和 `SHA256SUMS.txt`。
-- SHA-256 清单在重新打包后逐文件核验，必须以 `HASH_FAILURES=0` 为通过条件。
+package_release.ps1 会：
+
+1. 重新构建 x64 CLI；
+2. 拒绝未签名/签名无效驱动；
+3. 校验 EXE 和驱动复制前后 SHA-256；
+4. 生成 release\Games8thBlocker-portable\SHA256SUMS.txt；
+5. 对清单执行逐文件复核，要求 HASH_FAILURES=0。

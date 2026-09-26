@@ -54,6 +54,12 @@ Check "RUNTIME/apply_driver" (
     ($progText -match 'KernelDriver\.AddBlockedPath') -and
     ($progText -match 'KernelDriver\.ContainsBlockedPath')
 ) "Apply 路径缺少驱动状态、下发或回读校验"
+$kernelText = [IO.File]::ReadAllText((Join-Path $root 'src\KernelDriver.cs'))
+Check "RUNTIME/wfp_appid" (
+    ($kernelText -match 'FwpmGetAppIdFromFileName0') -and
+    ($kernelText -match 'FwpByteBlob') -and
+    ($kernelText -match 'FwpmFreeMemory0')
+) "驱动下发仍使用 DOS 路径，未转换为 ALE_APP_ID"
 Check "RUNTIME/clear_driver" (
     ($progText -match 'KernelDriver\.ClearAll\(\)') -and
     ($progText -match 'KernelDriver\.TryQueryBlockedPaths')
@@ -84,6 +90,8 @@ Check "CLI/direct_test" (
 ) "CLI 测试模式未执行真实 EXE 校验、驱动下发或 QUERY_PATHS 回读"
 Check "BUILD/cli_only" (
     ($batText -match '/target:exe') -and
+    ($batText -match '/platform:x64') -and
+    ($batText -match '/warnaserror\+') -and
     ($batText -match 'src\\FeilianCli\.cs') -and
     ($batText -match 'src\\KernelDriver\.cs') -and
     (-not ($batText -match 'src\\Program\.cs')) -and

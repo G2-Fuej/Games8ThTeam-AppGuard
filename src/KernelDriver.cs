@@ -124,6 +124,22 @@ namespace Games8thTeamBlocker
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FwpByteBlob
+        {
+            public uint Size;
+            public IntPtr Data;
+        }
+
+        [DllImport("fwpuclnt.dll", EntryPoint = "FwpmGetAppIdFromFileName0",
+            CharSet = CharSet.Unicode)]
+        private static extern uint FwpmGetAppIdFromFileName(
+            string fileName,
+            out IntPtr appId);
+
+        [DllImport("fwpuclnt.dll", EntryPoint = "FwpmFreeMemory0")]
+        private static extern void FwpmFreeMemory(ref IntPtr pointer);
+
         private const uint GenericRead = 0x80000000;
         private const uint GenericWrite = 0x40000000;
         private const uint FileShareRead = 0x00000001;
@@ -526,8 +542,47 @@ namespace Games8thTeamBlocker
                 string candidate = path.Trim().Trim('"');
                 if (!File.Exists(candidate) && !Directory.Exists(candidate))
                     return false;
-                normalized = Path.GetFullPath(candidate).Replace('/', '\\');
-                return normalized.Length > 0;
+                string fullPath = Path.GetFullPath(candidate).Replace('/', '\\');
+
+                // WFP ALE_APP_ID is not the DOS path.  Ask the Windows WFP API
+                // for the exact byte blob used at ALE_AUTH_CONNECT so the
+                // driver compares like-for-like instead of silently storing a
+                // path that can never match classification metadata.
+                IntPtr appId = IntPtr.Zero;
+                uint result = FwpmGetAppIdFromFileName(fullPath, out appId);
+                if (result != 0 || appId == IntPtr.Zero)
+                {
+                    SetError(unchecked((int)result),
+                        "FwpmGetAppIdFromFileName0 失败，错误码 " + result.ToString());
+                    return false;
+                }
+                try
+                {
+                    FwpByteBlob blob = (FwpByteBlob)Marshal.PtrToStructure(
+                        appId, typeof(FwpByteBlob));
+                    if (blob.Data == IntPtr.Zero || blob.Size < 2 ||
+                        (blob.Size % 2) != 0 || blob.Size > MaxPathLen * 2)
+                    {
+                        SetError(13, "WFP 返回了非法 ALE_APP_ID");
+                        return false;
+                    }
+
+                    string value = Marshal.PtrToStringUni(blob.Data, (int)(blob.Size / 2));
+                    if (value == null) value = "";
+                    int nul = value.IndexOf('\0');
+                    if (nul >= 0) value = value.Substring(0, nul);
+                    normalized = value;
+                    if (normalized.Length == 0)
+                    {
+                        SetError(13, "WFP 返回了空 ALE_APP_ID");
+                        return false;
+                    }
+                    return true;
+                }
+                finally
+                {
+                    FwpmFreeMemory(ref appId);
+                }
             }
             catch
             {

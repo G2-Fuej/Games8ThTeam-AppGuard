@@ -29,19 +29,31 @@ if not exist "%WDKROOT%\Include" (
     exit /b 1
 )
 
-rem Pick highest SDK version folder
-for /f "delims=" %%i in ('dir /b /ad /o-n "%WDKROOT%\Include"') do (
-    set SDKVER=%%i
-    goto :found
+rem Pick the highest complete numeric SDK version.  Include also contains
+rem non-version directories (for example wdf), and partial SDK installs may
+rem have headers without matching kernel libraries.
+set "SDKVER="
+for /f "delims=" %%i in ('dir /b /ad /o-n "%WDKROOT%\Include\10.0.*" 2^>nul') do (
+    if exist "%WDKROOT%\Include\%%i\km\ntddk.h" if exist "%WDKROOT%\Lib\%%i\km\x64\ntoskrnl.lib" (
+        set "SDKVER=%%i"
+        goto :found
+    )
 )
 :found
+if not defined SDKVER (
+    echo [ERROR] No complete WDK version with km headers and x64 libraries was found.
+    pause
+    exit /b 1
+)
 echo [OK] WDK SDK version: %SDKVER%
 
 call %VCVARS% x64
 
-cl /nologo /kernel /O1 /GS /Zl /W4 -DWIN32 -D_AMD64_ -DNDEBUG ^
+if not exist "driver\build\Release" mkdir "driver\build\Release"
+
+cl /nologo /kernel /O1 /GS /guard:cf /Qspectre /Zl /W4 /WX /utf-8 /wd4324 -DWIN32 -D_AMD64_ -DNDEBUG ^
    /I"%WDKROOT%\Include\%SDKVER%\km" /I"%WDKROOT%\Include\%SDKVER%\shared" ^
-   /c driver\g8tguard.c -o driver\g8tguard.obj
+   /c driver\g8tguard.c /Fo"driver\build\Release\g8tguard.obj"
 
 if %ERRORLEVEL% NEQ 0 (
     echo [FAIL] compile failed
@@ -50,14 +62,16 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 link /nologo /driver /kernel /subsystem:native /entry:DriverEntry ^
+   /guard:cf /dynamicbase /nxcompat /release /opt:ref /opt:icf ^
    /LIBPATH:"%WDKROOT%\Lib\%SDKVER%\km\x64" ^
-   driver\g8tguard.obj ntoskrnl.lib fwpkclnt.lib ^
-   /out:driver\Games8thGuard.sys
+   "driver\build\Release\g8tguard.obj" ntoskrnl.lib fwpkclnt.lib ntstrsafe.lib bufferoverflowfastfailk.lib ^
+   /out:"driver\build\Release\Games8thGuard-unsigned.sys"
 
 if %ERRORLEVEL% EQU 0 (
     echo.
-    echo [OK] Build successful: driver\Games8thGuard.sys
-    dir driver\Games8thGuard.sys
+    echo [OK] Unsigned build successful: driver\build\Release\Games8thGuard-unsigned.sys
+    echo [INFO] Sign it separately, then replace Games8thGuard.sys only after verification.
+    dir "driver\build\Release\Games8thGuard-unsigned.sys"
 ) else (
     echo [FAIL] link failed
 )

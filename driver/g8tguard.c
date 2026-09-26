@@ -64,8 +64,8 @@ static UNICODE_STRING g_deviceName;
 static UNICODE_STRING g_symbolicName;
 
 static G8T_BLOCKED_PATHS g_blocked;             /* protected by g_lock */
-static ULONG g_calloutV4Id = 0;
-static ULONG g_calloutV6Id = 0;
+static UINT32 g_calloutV4Id = 0;
+static UINT32 g_calloutV6Id = 0;
 static KSPIN_LOCK g_lock;
 static HANDLE g_engineHandle = NULL;   /* WFP engine 会话句柄，驱动生命周期内保持打开 */
 
@@ -74,6 +74,8 @@ DEFINE_GUID(G8T_CALLOUT_AUTH_V4,
     0x2b7f3d2a, 0x1e4a, 0x4c60, 0x9a, 0xd1, 0x3f, 0x1a, 0x8b, 0x2c, 0x9d, 0x44);
 DEFINE_GUID(G8T_CALLOUT_AUTH_V6,
     0x2b7f3d2a, 0x1e4a, 0x4c60, 0x9a, 0xd1, 0x3f, 0x1a, 0x8b, 0x2c, 0x9d, 0x45);
+DEFINE_GUID(G8T_SUBLAYER,
+    0x2b7f3d2a, 0x1e4a, 0x4c60, 0x9a, 0xd1, 0x3f, 0x1a, 0x8b, 0x2c, 0x9d, 0x46);
 
 /* ---- forward decls ---- */
 static NTSTATUS g8tCreate(PDEVICE_OBJECT dev, PIRP irp);
@@ -83,9 +85,25 @@ static VOID g8tUnload(PDRIVER_OBJECT drv);
 
 static NTSTATUS g8tRegisterCallouts(PDEVICE_OBJECT dev);
 static VOID g8tUnregisterCallouts(VOID);
+static NTSTATUS NTAPI g8tCalloutNotify(
+    FWPS_CALLOUT_NOTIFY_TYPE notifyType,
+    const GUID* filterKey,
+    FWPS_FILTER1* filter);
 
 /* Case-insensitive wide string comparison helper (bounded) */
 static BOOLEAN g8tWildcardMatch(PCWSTR haystack, PCWSTR needle);
+
+static NTSTATUS NTAPI
+g8tCalloutNotify(
+    FWPS_CALLOUT_NOTIFY_TYPE notifyType,
+    const GUID* filterKey,
+    FWPS_FILTER1* filter)
+{
+    UNREFERENCED_PARAMETER(notifyType);
+    UNREFERENCED_PARAMETER(filterKey);
+    UNREFERENCED_PARAMETER(filter);
+    return STATUS_SUCCESS;
+}
 
 /* classify for ALE_AUTH_CONNECT V4 */
 static VOID NTAPI g8tClassifyAuthConnectV4(
@@ -289,7 +307,6 @@ g8tClassifyAuthConnectV6(
 {
     WCHAR processPath[MAX_PATH_LEN];
     ULONG processPathLen = 0;
-    NTSTATUS status;
     const FWP_BYTE_BLOB* appId = NULL;
 
     UNREFERENCED_PARAMETER(layerData);
@@ -344,17 +361,22 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
     FWPS_CALLOUT1 callout;
     FWPM_CALLOUT0 fwpmCallout;
     FWPM_FILTER0 filter;
+    FWPM_SUBLAYER0 subLayer;
     GUID layerV4 = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
     GUID layerV6 = FWPM_LAYER_ALE_AUTH_CONNECT_V6;
     FWPM_SESSION0 session;
     HANDLE engineHandle = NULL;
     NTSTATUS ns;
+    BOOLEAN transactionStarted = FALSE;
 
     RtlZeroMemory(&callout, sizeof(callout));
     callout.calloutKey = G8T_CALLOUT_AUTH_V4;
     callout.flags = 0;
     callout.classifyFn = g8tClassifyAuthConnectV4;
-    callout.notifyFn = NULL;
+    /* Supply a standards-compliant notification callback.  The previously
+     * signed build passed NULL here and NtLoadDriver returned
+     * STATUS_FWP_NULL_POINTER during WFP initialization. */
+    callout.notifyFn = g8tCalloutNotify;
     callout.flowDeleteFn = NULL;
 
     status = FwpsCalloutRegister1(dev, &callout, &g_calloutV4Id);
@@ -382,6 +404,28 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
     {
         DbgPrint("Games8thGuard: FwpmEngineOpen0 failed %08x\n", status);
         goto cleanup_callouts;
+    }
+
+    status = FwpmTransactionBegin0(engineHandle, 0);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Games8thGuard: FwpmTransactionBegin0 failed %08x\n", status);
+        goto cleanup_engine;
+    }
+    transactionStarted = TRUE;
+
+    RtlZeroMemory(&subLayer, sizeof(subLayer));
+    subLayer.subLayerKey = G8T_SUBLAYER;
+    subLayer.displayData.name = L"Games8thGuard sublayer";
+    subLayer.displayData.description = L"Games8Th.Team Feilian network guard";
+    subLayer.flags = 0;
+    subLayer.providerKey = NULL;
+    subLayer.weight = 0x100;
+    status = FwpmSubLayerAdd0(engineHandle, &subLayer, NULL);
+    if (!NT_SUCCESS(status) && status != STATUS_FWP_ALREADY_EXISTS)
+    {
+        DbgPrint("Games8thGuard: FwpmSubLayerAdd0 failed %08x\n", status);
+        goto cleanup_engine;
     }
 
     RtlZeroMemory(&fwpmCallout, sizeof(fwpmCallout));
@@ -415,7 +459,7 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
     /* Add a filter that calls our callout on every ALE auth connect */
     RtlZeroMemory(&filter, sizeof(filter));
     filter.layerKey = layerV4;
-    filter.subLayerKey = FWPM_SUBLAYER_UNIVERSAL;
+    filter.subLayerKey = G8T_SUBLAYER;
     filter.weight.type = FWP_EMPTY;
     filter.numFilterConditions = 0;
     filter.filterCondition = NULL;
@@ -433,7 +477,7 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
 
     RtlZeroMemory(&filter, sizeof(filter));
     filter.layerKey = layerV6;
-    filter.subLayerKey = FWPM_SUBLAYER_UNIVERSAL;
+    filter.subLayerKey = G8T_SUBLAYER;
     filter.weight.type = FWP_EMPTY;
     filter.numFilterConditions = 0;
     filter.filterCondition = NULL;
@@ -449,6 +493,14 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
         goto cleanup_engine;
     }
 
+    status = FwpmTransactionCommit0(engineHandle);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("Games8thGuard: FwpmTransactionCommit0 failed %08x\n", status);
+        goto cleanup_engine;
+    }
+    transactionStarted = FALSE;
+
     /* 成功：保留 engine 会话（动态 session），驱动整个生命周期内保持打开，
      * 使 ALE filter 持续生效；卸载时才关闭并注销 callout。 */
     g_engineHandle = engineHandle;
@@ -456,7 +508,11 @@ g8tRegisterCallouts(PDEVICE_OBJECT dev)
     return STATUS_SUCCESS;
 
 cleanup_engine:
-    /* 失败：先关会话撤销已添加的 filter，再注销 callout，避免悬空引用 */
+    /* Abort first so no partial sublayer/callout/filter set can survive a
+     * failed initialization.  Closing the dynamic session removes committed
+     * management objects; runtime callouts are then unregistered below. */
+    if (transactionStarted && engineHandle != NULL)
+        FwpmTransactionAbort0(engineHandle);
     if (engineHandle != NULL)
         FwpmEngineClose0(engineHandle);
     g8tUnregisterCallouts();
@@ -709,6 +765,8 @@ g8tClose(PDEVICE_OBJECT dev, PIRP irp)
 static VOID
 g8tUnload(PDRIVER_OBJECT drv)
 {
+    UNREFERENCED_PARAMETER(drv);
+
     /* 卸载顺序必须严格：先关 engine 会话撤销 filter，再注销 callout，
      * 否则 BFE 里仍存在引用该 callout 的 filter，注销会失败并残留悬空引用。 */
     if (g_engineHandle != NULL)

@@ -34,17 +34,21 @@
     <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)build\$(Configuration)\obj\</IntDir>
     <TargetName>Games8thGuard</TargetName>
-    <TreatWarningAsError>false</TreatWarningAsError>
+    <TreatWarningAsError>true</TreatWarningAsError>
     <SignMode>Off</SignMode>
     <EnableInf2cat>false</EnableInf2cat>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <TreatWarningAsError>false</TreatWarningAsError>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
+      <AdditionalOptions>/utf-8 /wd4324 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <TreatLinkerWarningAsErrors>false</TreatLinkerWarningAsErrors>
-      <AdditionalDependencies>fwpkclnt.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <TreatLinkerWarningAsErrors>true</TreatLinkerWarningAsErrors>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
+      <AdditionalOptions>/dynamicbase /nxcompat /release /opt:ref /opt:icf %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalDependencies>fwpkclnt.lib;ntstrsafe.lib;bufferoverflowfastfailk.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
