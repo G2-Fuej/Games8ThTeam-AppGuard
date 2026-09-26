@@ -5,142 +5,123 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
-$stage = [IO.Path]::GetFullPath((Join-Path $root 'release\Games8thBlocker-portable'))
-$rootPrefix = $root.TrimEnd('\') + '\'
+$release = [IO.Path]::GetFullPath((Join-Path $root 'release'))
+$appSource = Join-Path $root 'Games8thBlocker.exe'
+$driverSource = Join-Path $root 'driver\build\Release\Games8thGuard.sys'
+$appDestination = Join-Path $release 'Games8Th.Team-Feilian-CLI.exe'
+$hashDestination = $appDestination + '.sha256.txt'
+$driverResourceName = 'Games8thTeamBlocker.Games8thGuard.sys'
+$approvedDriverHash = 'CFCB98EC34428375E8374721DBBF9B588CB22E93B652F01B9BCF23A531297C97'
 
-if (-not $stage.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to write outside the repository: $stage"
+if (-not $release.StartsWith($root.TrimEnd('\') + '\',
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to write outside the repository: $release"
 }
 
 if (-not $SkipBuild) {
     & cmd.exe /d /c 'build.bat <nul'
     if ($LASTEXITCODE -ne 0) {
-        throw "User-mode build failed with exit code $LASTEXITCODE"
+        throw "Single-EXE build failed with exit code $LASTEXITCODE"
     }
 }
 
-$appSource = Join-Path $root 'Games8thBlocker.exe'
 if (-not (Test-Path -LiteralPath $appSource)) {
     throw 'Games8thBlocker.exe was not produced'
 }
-$driverSource = Join-Path $root 'driver\build\Release\Games8thGuard.sys'
 if (-not (Test-Path -LiteralPath $driverSource)) {
-    throw 'Games8thGuard.sys was not produced; refusing to create a driver-only package'
+    throw 'Signed Games8thGuard.sys is missing'
 }
+
+$appSignature = Get-AuthenticodeSignature -LiteralPath $appSource
+if ($appSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Games8thBlocker.exe Authenticode status is $($appSignature.Status); sign the final EXE and rerun with -SkipBuild"
+}
+
 $driverSignature = Get-AuthenticodeSignature -LiteralPath $driverSource
 if ($driverSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Games8thGuard.sys Authenticode status is $($driverSignature.Status); refusing to package an unverified driver"
+    throw "Games8thGuard.sys Authenticode status is $($driverSignature.Status)"
+}
+$driverHash = (Get-FileHash -LiteralPath $driverSource -Algorithm SHA256).Hash
+if ($driverHash -ne $approvedDriverHash) {
+    throw "Games8thGuard.sys SHA-256 is not the approved signed artifact: $driverHash"
 }
 
-if (Test-Path -LiteralPath $stage) {
-    Remove-Item -LiteralPath $stage -Recurse -Force
-}
-New-Item -ItemType Directory -Path $stage -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $stage 'assets') -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $stage 'driver') -Force | Out-Null
-
-$portableAppName = 'Games8Th.Team-Feilian-CLI.exe'
-$appDestination = Join-Path $stage $portableAppName
+New-Item -ItemType Directory -Path $release -Force | Out-Null
 Copy-Item -LiteralPath $appSource -Destination $appDestination -Force
 $sourceHash = (Get-FileHash -LiteralPath $appSource -Algorithm SHA256).Hash
 $destinationHash = (Get-FileHash -LiteralPath $appDestination -Algorithm SHA256).Hash
 if ($sourceHash -ne $destinationHash) {
-    throw "Games8thBlocker.exe copy verification failed: source=$sourceHash destination=$destinationHash"
+    throw "Single EXE copy verification failed: source=$sourceHash destination=$destinationHash"
 }
-Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $stage
-Copy-Item -LiteralPath (Join-Path $root 'verification_2026-09-25.md') -Destination $stage
+$destinationSignature = Get-AuthenticodeSignature -LiteralPath $appDestination
+if ($destinationSignature.Status -ne
+    [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Packaged EXE Authenticode status is $($destinationSignature.Status)"
+}
 
-foreach ($asset in @('mark_64.png', 'logo_mark.png', 'app.ico')) {
-    $source = Join-Path $root "assets\$asset"
-    if (Test-Path -LiteralPath $source) {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $stage "assets\$asset")
+$assembly = [Reflection.Assembly]::LoadFile($appDestination)
+$resourceNames = $assembly.GetManifestResourceNames()
+if ($resourceNames -notcontains $driverResourceName) {
+    throw "Single EXE does not contain $driverResourceName"
+}
+$stream = $assembly.GetManifestResourceStream($driverResourceName)
+if ($null -eq $stream) { throw 'Embedded driver resource cannot be opened' }
+try {
+    $memory = New-Object IO.MemoryStream
+    try {
+        $stream.CopyTo($memory)
+        $embeddedDriver = $memory.ToArray()
+    }
+    finally { $memory.Dispose() }
+}
+finally { $stream.Dispose() }
+
+$sha = [Security.Cryptography.SHA256]::Create()
+try {
+    $embeddedHash = ([BitConverter]::ToString(
+        $sha.ComputeHash($embeddedDriver))).Replace('-', '')
+}
+finally { $sha.Dispose() }
+if ($embeddedHash -ne $approvedDriverHash) {
+    throw "Embedded driver SHA-256 mismatch: $embeddedHash"
+}
+
+$verificationDriver = Join-Path $release '.embedded-driver-verification.sys'
+try {
+    [IO.File]::WriteAllBytes($verificationDriver, $embeddedDriver)
+    $embeddedSignature = Get-AuthenticodeSignature -LiteralPath $verificationDriver
+    if ($embeddedSignature.Status -ne
+        [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Embedded driver Authenticode status is $($embeddedSignature.Status)"
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $verificationDriver) {
+        [IO.File]::Delete($verificationDriver)
     }
 }
 
-foreach ($file in @('load.bat', 'unload.bat')) {
-    $source = Join-Path $root "driver\$file"
-    if (Test-Path -LiteralPath $source) {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $stage "driver\$file")
-    }
+[IO.File]::WriteAllText(
+    $hashDestination,
+    ($destinationHash.ToLowerInvariant() + '  Games8Th.Team-Feilian-CLI.exe' + [char]10),
+    [Text.ASCIIEncoding]::new())
+
+# Remove previous split-package outputs. Runtime delivery is now one EXE.
+$legacyDirectory = Join-Path $release 'Games8thBlocker-portable'
+if (Test-Path -LiteralPath $legacyDirectory) {
+    [IO.Directory]::Delete($legacyDirectory, $true)
+}
+foreach ($legacyFile in @(
+    'Games8thBlocker-portable.zip',
+    'Games8thBlocker-portable.zip.sha256.txt')) {
+    $legacyPath = Join-Path $release $legacyFile
+    if (Test-Path -LiteralPath $legacyPath) { [IO.File]::Delete($legacyPath) }
 }
 
-$driverDestination = Join-Path $stage 'driver\Games8thGuard.sys'
-Copy-Item -LiteralPath $driverSource -Destination $driverDestination
-$driverSourceHash = (Get-FileHash -LiteralPath $driverSource -Algorithm SHA256).Hash
-$driverDestinationHash = (Get-FileHash -LiteralPath $driverDestination -Algorithm SHA256).Hash
-if ($driverSourceHash -ne $driverDestinationHash) {
-    throw "Games8thGuard.sys copy verification failed: source=$driverSourceHash destination=$driverDestinationHash"
-}
-$packagedSignature = Get-AuthenticodeSignature -LiteralPath $driverDestination
-if ($packagedSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Packaged Games8thGuard.sys signature status is $($packagedSignature.Status)"
-}
-
-@'
-@echo off
-cd /d "%~dp0"
-start "" "%~dp0Games8Th.Team-Feilian-CLI.exe"
-'@ | Set-Content -LiteralPath (Join-Path $stage 'start-Games8thBlocker.bat') -Encoding ASCII
-
-@'
-Games8Th.Team 飞连专用 CLI 便携版（强制驱动模式）
-
-1. 运行 start-Games8thBlocker.bat 或直接运行 Games8Th.Team-Feilian-CLI.exe。
-2. 启动先显示 Games8Th.Team 标识 2 秒，再自动检测飞连路径、进程和服务。
-3. 程序只对实际发现的飞连目标实施屏蔽，并使用 Games8thGuard.sys；驱动未通过服务、设备和
-   QUERY_PATHS 三项校验时，结果为 UNVERIFIED，不会回退到 WFP/防火墙。
-4. driver\Games8thGuard.sys 必须有当前 Windows 策略信任的有效签名。
-   便携包不包含签名绕过，也不会修改 Secure Boot、DSE 或测试签名设置。
-5. 需要清理时，运行 Games8Th.Team-Feilian-CLI.exe cli clear。
-6. 跳过飞连检测直接测试指定软件：
-   Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
-   目标必须是当前存在的 EXE；只有驱动下发和 QUERY_PATHS 完整路径回读均成功才报告 OK。
-
-命令行：
-  Games8Th.Team-Feilian-CLI.exe
-  Games8Th.Team-Feilian-CLI.exe cli auto
-  Games8Th.Team-Feilian-CLI.exe cli driver-status
-  Games8Th.Team-Feilian-CLI.exe cli list
-  Games8Th.Team-Feilian-CLI.exe cli clear
-  Games8Th.Team-Feilian-CLI.exe cli test "C:\Path\Target.exe"
-'@ | Set-Content -LiteralPath (Join-Path $stage 'portable-readme.txt') -Encoding UTF8
-
-$hashLines = Get-ChildItem -LiteralPath $stage -Recurse -File |
-    Sort-Object FullName |
-    ForEach-Object {
-        $relative = $_.FullName.Substring($stage.Length).TrimStart('\')
-        $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash  $relative"
-    }
-$hashFile = Join-Path $stage 'SHA256SUMS.txt'
-$lineFeed = [char]10
-$hashText = ($hashLines -join $lineFeed) + $lineFeed
-[IO.File]::WriteAllText($hashFile, $hashText, [Text.ASCIIEncoding]::new())
-
-$hashFailures = 0
-foreach ($line in $hashLines) {
-    $parts = $line -split '  ', 2
-    if ($parts.Count -ne 2) {
-        $hashFailures++
-        continue
-    }
-    $expected = $parts[0]
-    $verifyPath = Join-Path $stage $parts[1]
-    if (-not (Test-Path -LiteralPath $verifyPath)) {
-        $hashFailures++
-        continue
-    }
-    $actual = (Get-FileHash -LiteralPath $verifyPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) {
-        $hashFailures++
-    }
-}
-Write-Output ('HASH_FAILURES=' + $hashFailures)
-if ($hashFailures -ne 0) {
-    throw "Portable release SHA-256 verification failed for $hashFailures file(s)"
-}
-
-Write-Output "Portable release written to: $stage"
-Get-ChildItem -LiteralPath $stage -Recurse -File |
-    Sort-Object FullName |
+Write-Output 'SINGLE_EXE=True'
+Write-Output ('EXE_SHA256=' + $destinationHash.ToLowerInvariant())
+Write-Output ('OUTER_EXE_SIGNATURE=' + $destinationSignature.Status)
+Write-Output ('EMBEDDED_DRIVER_SHA256=' + $embeddedHash.ToLowerInvariant())
+Write-Output ('EMBEDDED_DRIVER_SIGNATURE=' + $embeddedSignature.Status)
+Get-Item -LiteralPath $appDestination, $hashDestination |
     Select-Object FullName, Length

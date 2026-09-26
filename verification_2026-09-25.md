@@ -10,7 +10,13 @@
 - 最终驱动：driver\build\Release\Games8thGuard.sys。
 - 最终驱动 SHA-256：cfcb98ec34428375e8374721dbbf9b588cb22e93b652f01b9bcf23a531297c97。
 - Authenticode：Valid；签名者 CN=科云（上海）信息技术有限公司。
+- 交付形式：单 EXE；驱动资源名 Games8thTeamBlocker.Games8thGuard.sys。
+- 最终外层 EXE Authenticode：Valid；签名者 CN=科云（上海）信息技术有限公司。
+- 最终外层 EXE SHA-256：fda4d77bcc685be7527a2279714606387a1cad40360973ee2efbf062414c4fa9。
+- 驱动释放目录：%ProgramData%\Games8Th.Team\FeilianBlocker。
 - 本机真实加载与网络阻断：VERIFIED。
+- 最终外层签名完成后的再次管理员加载：当前自动化会话不是管理员且无法启动
+  高权限子进程，因此保持 UNVERIFIED；不得用签名前测试伪报为签名后复验。
 - 真实飞连目标：本机未发现，因此飞连目标实测保持 UNVERIFIED。
 
 ## 修复内容
@@ -26,7 +32,9 @@
 5. 驱动构建启用 /GS、/Qspectre、CFG、ASLR、NX、/W4 /WX，并链接
    bufferoverflowfastfailk.lib。
 6. 正式驱动构建只输出 Games8thGuard-unsigned.sys，不会覆盖已签名发布件。
-7. 便携打包拒绝 Authenticode 非 Valid 的驱动，并校验复制前后 SHA-256。
+7. 单 EXE 打包拒绝 Authenticode 非 Valid 的驱动，并校验内嵌资源 SHA-256。
+8. 将签名驱动嵌入 CLI EXE；运行时执行固定 SHA-256、WinVerifyTrust、SCM
+   服务启动及 QUERY_PATHS 四层验证，不再依赖外部 load.bat。
 
 ## 用户态构建
 
@@ -36,7 +44,7 @@
 - 架构：x64 (8664)。
 - 子系统：Windows CUI。
 - 清单：requireAdministrator。
-- 编译输入：src\FeilianCli.cs、src\KernelDriver.cs；不包含 WinForms GUI、
+- 编译输入：src\FeilianCli.cs、src\KernelDriver.cs、src\EmbeddedDriverInstaller.cs；不包含 WinForms GUI、
   src\Program.cs 或 src\WfpEngine.cs。
 
 ## 驱动真实加载与 IOCTL 验证
@@ -54,7 +62,7 @@
     NtUnloadDriver=0x00000000
     临时注册表项已删除=True
 
-正式产品链日志：production_driver_e2e_20260926.log。
+拆分包历史产品链日志：production_driver_e2e_20260926.log。
 
     driver\load.bat=0
     Games8thGuard 服务=RUNNING
@@ -72,6 +80,30 @@
     driver\unload.bat=0
     最终服务/注册表残留=无
 
+单 EXE 最终产品链日志：production_single_exe_e2e_20260926.log。
+
+    ELEVATED=True
+    LOAD_MODE=EMBEDDED_DRIVER_RESOURCE
+    cli test C:\Windows\System32\notepad.exe=0
+    服务状态=RUNNING
+    设备句柄=可用
+    QUERY_PATHS=响应正常
+    回读路径=\device\harddiskvolume3\windows\system32\notepad.exe
+    cli clear=0
+    cli unload=0
+    PRODUCTION_CHAIN_VERIFIED=True
+    FINAL_EXIT=0
+
+卸载后再次核验：服务不存在、服务注册表项不存在、ProgramData 中释放的 SYS
+和父目录均不存在。因此本机单 EXE 自释放、加载、IOCTL 和清理链为 VERIFIED。
+
+上述管理员产品链测试发生在外层 EXE 完成 Authenticode 签名之前。签名后复核
+确认根目录 EXE 与发布副本哈希完全一致，二者 Authenticode 均为 `Valid`，内嵌
+驱动大小为 20592 字节，SHA-256 仍为
+`cfcb98ec34428375e8374721dbbf9b588cb22e93b652f01b9bcf23a531297c97`，且其
+Authenticode 仍为 `Valid`。由于当前终端为 Medium Integrity，签名后的最终 EXE
+尚未完成第二次管理员加载，故该单独检查项明确记为 `UNVERIFIED`。
+
 ## 7890 端到端网络阻断
 
 日志：native_driver_network_block_appid_elevated_20260926.log。
@@ -88,14 +120,14 @@ ALE_APP_ID 前连接成功；写入后新连接收到套接字访问拒绝；清
 
 ## 三轮连续审计
 
-最终有效审计日志：audit_3rounds_release_20260926.log。任一轮失败均须修复并
+最终有效审计日志：audit_3rounds_single_exe_20260926.log。任一轮失败均须修复并
 从第 1 轮重新开始；最终有效的一组结果如下：
 
 | 轮次 | WFP/集成 | 驱动静态 | 蓝屏风险 | 结果 |
 |---|---:|---:|---:|---|
-| 1 | 28/28 | 32/32 | 32/32 | CLEAN |
-| 2 | 28/28 | 32/32 | 32/32 | CLEAN |
-| 3 | 28/28 | 32/32 | 32/32 | CLEAN |
+| 1 | 29/29 | 32/32 | 32/32 | CLEAN |
+| 2 | 29/29 | 32/32 | 32/32 | CLEAN |
+| 3 | 29/29 | 32/32 | 32/32 | CLEAN |
 
 新增覆盖包括：非空 notify callback、自定义 sublayer、WFP transaction/abort、
 ALE_APP_ID 转换、CFG/ASLR/NX、签名件防覆盖及 x64 CLI-only 构建。
@@ -117,12 +149,17 @@ ALE_APP_ID 转换、CFG/ASLR/NX、签名件防覆盖及 x64 CLI-only 构建。
   未在目标机器实测时应标记为 UNVERIFIED。
 - 工具不会修改测试签名、Secure Boot、DSE、WDAC 或 g_CiOptions。
 
-## 便携包
+## 单 EXE 发布
 
-package_release.ps1 会：
+正式发布先构建并手动签名最终 EXE，然后运行
+`package_release.ps1 -SkipBuild`。脚本会：
 
-1. 重新构建 x64 CLI；
+1. 拒绝未签名或签名无效的最终外层 EXE；
 2. 拒绝未签名/签名无效驱动；
-3. 校验 EXE 和驱动复制前后 SHA-256；
-4. 生成 release\Games8thBlocker-portable\SHA256SUMS.txt；
-5. 对清单执行逐文件复核，要求 HASH_FAILURES=0。
+3. 检查 EXE 包含 Games8thTeamBlocker.Games8thGuard.sys；
+4. 解出资源并复核 SHA-256 和 Authenticode；
+5. 生成 release\Games8Th.Team-Feilian-CLI.exe 及其 SHA-256 文本。
+
+Windows 内核驱动必须以文件路径交给 SCM，因此运行时仍会将内嵌 SYS 安全释放
+到 ProgramData；这不要求用户另外携带驱动文件。`cli unload` 会停止并删除服务，
+随后删除释放文件。当前外层 EXE 和内嵌 SYS 的本机 Authenticode 状态均为 Valid。

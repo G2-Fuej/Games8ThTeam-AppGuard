@@ -6,8 +6,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$load = Join-Path $root 'driver\load.bat'
-$unload = Join-Path $root 'driver\unload.bat'
 $app = Join-Path $root 'Games8thBlocker.exe'
 $lines = New-Object System.Collections.Generic.List[string]
 $exitCode = 1
@@ -39,17 +37,15 @@ try {
     Add-Result ('ELEVATED=' + $elevated)
     if (-not $elevated) { throw 'ADMIN_REQUIRED' }
 
-    $loadCode = Invoke-Captured 'cmd.exe' @('/d', '/c', ('"' + $load + '"'))
-    if ($loadCode -ne 0) { throw "LOAD_FAILED=$loadCode" }
-
-    $statusCode = Invoke-Captured $app @('cli', 'driver-status')
-    if ($statusCode -ne 0) { throw "STATUS_FAILED=$statusCode" }
-
     if (-not (Test-Path -LiteralPath $TestTarget)) {
         throw "TEST_TARGET_NOT_FOUND=$TestTarget"
     }
+    Add-Result 'LOAD_MODE=EMBEDDED_DRIVER_RESOURCE'
     $testCode = Invoke-Captured $app @('cli', 'test', $TestTarget)
     if ($testCode -ne 0) { throw "DIRECT_TEST_FAILED=$testCode" }
+
+    $statusCode = Invoke-Captured $app @('cli', 'driver-status')
+    if ($statusCode -ne 0) { throw "STATUS_FAILED=$statusCode" }
 
     $listCode = Invoke-Captured $app @('cli', 'list')
     if ($listCode -ne 0) { throw "LIST_FAILED=$listCode" }
@@ -66,7 +62,7 @@ catch {
 }
 finally {
     try {
-        $unloadCode = Invoke-Captured 'cmd.exe' @('/d', '/c', ('"' + $unload + '"'))
+        $unloadCode = Invoke-Captured $app @('cli', 'unload')
         if ($unloadCode -ne 0 -and $exitCode -eq 0) { $exitCode = 2 }
     } catch {
         Add-Result ('UNLOAD_EXCEPTION=' + $_.Exception.Message)

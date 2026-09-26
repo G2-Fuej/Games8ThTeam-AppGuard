@@ -29,6 +29,8 @@ namespace Games8thTeamBlocker
                 ListBlockedPaths();
             else if (action == "clear")
                 ClearBlockedPaths();
+            else if (action == "unload")
+                UnloadDriver();
             else if (action == "verify")
                 VerifyFeilianTargets();
             else if (action == "test")
@@ -68,7 +70,7 @@ namespace Games8thTeamBlocker
 
         private static void PrintUsage()
         {
-            Console.WriteLine("用法: Games8thBlocker.exe [cli] [auto|driver-status|list|clear|verify|test]");
+            Console.WriteLine("用法: Games8thBlocker.exe [cli] [auto|driver-status|list|clear|unload|verify|test]");
             Console.WriteLine("测试: Games8thBlocker.exe [cli] test \"C:\\Path\\Target.exe\"");
         }
 
@@ -207,38 +209,25 @@ namespace Games8thTeamBlocker
             KernelDriver.DriverStatus status = KernelDriver.GetStatus();
             if (status.IsLoaded) return status;
 
-            string loader = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "driver", "load.bat");
-            if (!File.Exists(loader)) return status;
-
-            Console.WriteLine("  驱动尚未就绪，正在调用 driver\\load.bat...");
-            try
-            {
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = "cmd.exe";
-                psi.Arguments = "/d /c \"\"" + loader + "\"\"";
-                psi.WorkingDirectory = Path.GetDirectoryName(loader);
-                psi.UseShellExecute = false;
-                psi.RedirectStandardOutput = true;
-                psi.RedirectStandardError = true;
-                psi.CreateNoWindow = true;
-                using (Process process = Process.Start(psi))
-                {
-                    if (process != null)
-                    {
-                        string output = process.StandardOutput.ReadToEnd();
-                        string error = process.StandardError.ReadToEnd();
-                        process.WaitForExit();
-                        if (!string.IsNullOrWhiteSpace(output)) Console.WriteLine(output.TrimEnd());
-                        if (!string.IsNullOrWhiteSpace(error)) Console.WriteLine(error.TrimEnd());
-                        Console.WriteLine("  驱动加载脚本退出码: " + process.ExitCode.ToString());
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("  [UNVERIFIED] 无法运行驱动加载脚本：" + ex.Message);
-            }
+            Console.WriteLine("  驱动尚未就绪，正在释放并加载 EXE 内嵌签名驱动...");
+            if (!EmbeddedDriverInstaller.EnsureLoaded())
+                Console.WriteLine("  [UNVERIFIED] " + EmbeddedDriverInstaller.LastMessage);
             return KernelDriver.GetStatus();
+        }
+
+        private static void UnloadDriver()
+        {
+            if (KernelDriver.GetStatus().IsLoaded && !KernelDriver.ClearAll())
+                Console.WriteLine("[UNVERIFIED] 卸载前清空路径失败：" + KernelDriver.LastErrorMessage);
+
+            string message;
+            if (EmbeddedDriverInstaller.UnloadAndCleanup(out message))
+                Console.WriteLine("[OK] " + message);
+            else
+            {
+                Console.WriteLine("[UNVERIFIED] " + message);
+                Environment.ExitCode = 1;
+            }
         }
 
         private static void PrintDriverStatus()

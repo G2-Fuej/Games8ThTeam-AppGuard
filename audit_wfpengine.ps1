@@ -8,6 +8,7 @@ $bat  = Join-Path $root "build.bat"
 
 $code = [IO.File]::ReadAllText($wfp)
 $progText = [IO.File]::ReadAllText($prog)
+$embedded = [IO.File]::ReadAllText((Join-Path $root "src\EmbeddedDriverInstaller.cs"))
 $batText = [IO.File]::ReadAllText($bat)
 
 $fails = New-Object System.Collections.Generic.List[string]
@@ -76,7 +77,17 @@ Check "CLI/auto_discovery" (
     ($progText -match 'ScanServices\(found\)') -and
     ($progText -match 'ScanUninstallRegistry\(found\)')
 ) "CLI 自动飞连发现不完整"
-Check "CLI/driver_autoload" ($progText -match 'driver.*load\.bat') "CLI 未尝试加载随包驱动"
+Check "CLI/driver_autoload" (
+    ($progText -match 'EmbeddedDriverInstaller\.EnsureLoaded\(\)') -and
+    ($embedded -match 'GetManifestResourceStream') -and
+    ($embedded -match 'CreateService\(') -and
+    ($embedded -match 'WinVerifyTrust')
+) "CLI 未从内嵌资源校验并加载签名驱动"
+Check "CLI/single_exe_resource" (
+    ($batText -match '/resource:.*Games8thGuard\.sys') -and
+    ($batText -match 'EmbeddedDriverInstaller\.cs') -and
+    (-not ($progText -match 'load\.bat'))
+) "构建未把驱动集成到单 EXE，或仍依赖外部 load.bat"
 Check "CLI/self_exclude" (
     ($progText -match 'IsSelfPath\(candidate\)') -and
     ($progText -match 'Process\.GetCurrentProcess\(\)\.MainModule\.FileName')
