@@ -13,3 +13,6 @@
 *.til
 work/
 _post_*/
+._cache_*.exe
+runtime_cli_*.log
+runtime_cli_*.rc

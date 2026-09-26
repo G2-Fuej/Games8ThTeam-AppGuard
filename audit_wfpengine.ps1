@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $wfp  = Join-Path $root "src\WfpEngine.cs"
-$prog = Join-Path $root "src\Program.cs"
+$prog = Join-Path $root "src\FeilianCli.cs"
 $bat  = Join-Path $root "build.bat"
 
 $code = [IO.File]::ReadAllText($wfp)
@@ -45,10 +45,10 @@ Check "SEDEBUG/called"  ($code -match 'EnableSeDebugPrivilege\(\);') "未调用 
 # not be reachable as a runtime fallback from the user-mode application.
 Check "RUNTIME/no_wfp_calls" (
     ([regex]::Matches($progText, '\bWfpEngine\s*\.\s*[A-Za-z_]')).Count -eq 0
-) "Program.cs 仍调用 WfpEngine 作为运行时后端"
+) "FeilianCli.cs 仍调用 WfpEngine 作为运行时后端"
 Check "RUNTIME/no_firewall_calls" (
     ([regex]::Matches($progText, '\bFirewall\s*\.\s*[A-Za-z_]')).Count -eq 0
-) "Program.cs 仍调用 Windows Firewall 作为运行时后端"
+) "FeilianCli.cs 仍调用 Windows Firewall 作为运行时后端"
 Check "RUNTIME/apply_driver" (
     ($progText -match 'KernelDriver\.GetStatus\(\)') -and
     ($progText -match 'KernelDriver\.AddBlockedPath') -and
@@ -60,8 +60,29 @@ Check "RUNTIME/clear_driver" (
 ) "Clear 路径缺少驱动清理或回读校验"
 Check "INTEG/self_exclude"   ($code -match 'SelfPath') "缺少自身路径排除"
 
-# ---- 6. build.bat 包含新文件 ----
-Check "BUILD/wfp_included" ($batText -match 'src\\WfpEngine\.cs') "build.bat 未包含 WfpEngine.cs"
+# ---- 6. CLI-only product build ----
+Check "CLI/splash_2s" (
+    ($progText -match 'ShowLogo\(\)') -and ($progText -match 'Thread\.Sleep\(2000\)')
+) "CLI 缺少 Games8Th.Team 标识或 2 秒展示"
+Check "CLI/auto_discovery" (
+    ($progText -match 'DiscoverFeilianTargets\(\)') -and
+    ($progText -match 'ScanProcesses\(found\)') -and
+    ($progText -match 'ScanServices\(found\)') -and
+    ($progText -match 'ScanUninstallRegistry\(found\)')
+) "CLI 自动飞连发现不完整"
+Check "CLI/driver_autoload" ($progText -match 'driver.*load\.bat') "CLI 未尝试加载随包驱动"
+Check "CLI/self_exclude" (
+    ($progText -match 'IsSelfPath\(candidate\)') -and
+    ($progText -match 'Process\.GetCurrentProcess\(\)\.MainModule\.FileName')
+) "CLI 自动发现未排除工具自身"
+Check "BUILD/cli_only" (
+    ($batText -match '/target:exe') -and
+    ($batText -match 'src\\FeilianCli\.cs') -and
+    ($batText -match 'src\\KernelDriver\.cs') -and
+    (-not ($batText -match 'src\\Program\.cs')) -and
+    (-not ($batText -match 'src\\WfpEngine\.cs')) -and
+    (-not ($batText -match 'System\.Windows\.Forms'))
+) "build.bat 未形成 CLI-only 构建"
 
 # ---- 7. 语法级机械平衡 ----
 $ob = ([regex]::Matches($code, '\{')).Count; $cb = ([regex]::Matches($code, '\}')).Count

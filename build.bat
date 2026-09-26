@@ -16,18 +16,14 @@ if exist "ref\assets\logo_mark.png" copy /Y "ref\assets\logo_mark.png" "assets\l
 if exist "ref\assets\app.ico" copy /Y "ref\assets\app.ico" "assets\app.ico" >nul
 
 echo [2/2] Compiling...
-"%CSC%" /target:winexe /out:Games8thBlocker.exe /nologo /optimize+ ^
+"%CSC%" /target:exe /out:Games8thBlocker.exe /nologo /optimize+ ^
   /win32manifest:"src\app.manifest" ^
   /win32icon:"assets\app.ico" ^
-  /r:System.Windows.Forms.dll ^
-  /r:System.Drawing.dll ^
   /r:System.dll ^
   /r:mscorlib.dll ^
   /r:System.Management.dll ^
-  /r:Microsoft.VisualBasic.dll ^
-  src\Program.cs ^
-  src\KernelDriver.cs ^
-  src\WfpEngine.cs
+  src\FeilianCli.cs ^
+  src\KernelDriver.cs
 
 if %ERRORLEVEL% EQU 0 (
     echo.

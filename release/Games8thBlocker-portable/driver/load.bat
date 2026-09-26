@@ -12,7 +12,8 @@ cd /d "%~dp0"
 set "ROOT=%~dp0.."
 set "SYS=%~dp0build\Release\Games8thGuard.sys"
 if not exist "%SYS%" set "SYS=%~dp0Games8thGuard.sys"
-set "APP=%ROOT%\Games8thBlocker.exe"
+set "APP=%ROOT%\Games8Th.Team-Feilian-CLI.exe"
+if not exist "%APP%" set "APP=%ROOT%\Games8thBlocker.exe"
 
 rem Do not change testsigning, Secure Boot, or other code-integrity settings.
 rem A kernel driver must already satisfy the active Windows signing policy.

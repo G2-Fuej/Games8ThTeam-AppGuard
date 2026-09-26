@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" "%~dp0Games8thBlocker.exe"
+start "" "%~dp0Games8Th.Team-Feilian-CLI.exe"
