@@ -79,22 +79,50 @@ namespace Games8thTeamBlocker
             try
             {
                 Console.Clear();
-                Console.ForegroundColor = ConsoleColor.DarkYellow;
             }
             catch { }
 
             Console.WriteLine();
-            Console.WriteLine("        GGGG   8888  TTTTT");
-            Console.WriteLine("       G       88     T");
-            Console.WriteLine("       G  GG   8888   T");
-            Console.WriteLine("       G   G   88     T");
-            Console.WriteLine("        GGGG   8888   T");
-            Console.WriteLine();
-            Console.WriteLine("                 Games8Th.Team");
-            Console.WriteLine("              飞连专用网络屏蔽器");
+            SetConsoleColor(ConsoleColor.DarkGray);
+            WriteCentered("+--------------------------------------------------+");
+            SetConsoleColor(ConsoleColor.DarkYellow);
+            WriteCentered("   GGGGGG      88888     TTTTTTTTT   ");
+            WriteCentered("  GG          88   88       TTT      ");
+            WriteCentered("  GG  GGG      88888        TTT      ");
+            WriteCentered("  GG   GG     88   88       TTT      ");
+            WriteCentered("   GGGGGG      88888        TTT      ");
+            SetConsoleColor(ConsoleColor.DarkGray);
+            WriteCentered("+--------------------------------------------------+");
+            SetConsoleColor(ConsoleColor.White);
+            WriteCentered("G A M E S 8 T H . T E A M");
+            SetConsoleColor(ConsoleColor.Cyan);
+            WriteCentered("FEILIAN  KERNEL  NETWORK  GUARD");
+            SetConsoleColor(ConsoleColor.DarkGray);
+            WriteCentered("DRIVER MODE  |  CLI ONLY  |  X64");
+            WriteCentered("+--------------------------------------------------+");
             Console.WriteLine();
             try { Console.ResetColor(); } catch { }
             Thread.Sleep(2000);
+        }
+
+        private static void SetConsoleColor(ConsoleColor color)
+        {
+            try { Console.ForegroundColor = color; }
+            catch { }
+        }
+
+        private static void WriteCentered(string text)
+        {
+            int width = 80;
+            try
+            {
+                if (!Console.IsOutputRedirected && Console.WindowWidth > 0)
+                    width = Console.WindowWidth;
+            }
+            catch { }
+
+            int padding = Math.Max(0, (width - text.Length) / 2);
+            Console.WriteLine(new string(' ', padding) + text);
         }
 
         private static void RunAutomaticBlock()

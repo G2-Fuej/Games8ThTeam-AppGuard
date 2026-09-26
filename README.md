@@ -1,6 +1,7 @@
 # 飞连屏蔽插件
 
-飞连专用 Windows CLI 工具。启动后显示 Games8Th.Team 标识 2 秒，自动
+飞连专用 Windows CLI 工具。启动后显示居中的 Games8Th.Team / G8T
+双色终端标识 2 秒，自动
 发现飞连进程、服务、安装目录和组件，并针对真实路径实施屏蔽。网络限制强制使用 `Games8thGuard.sys`
 内核驱动；用户态 WFP 和 Windows 防火墙代码仅用于结构/兼容性审计，
 不会编入 CLI 产品，也不会作为运行时回退。
@@ -73,6 +74,6 @@ EXE 清单使用 `requireAdministrator`。内置加载器验证资源哈希和 A
 创建并启动服务，再通过设备句柄和 `QUERY_PATHS` 验证实际可用性。
 程序不会修改测试签名、Secure Boot 或其他代码完整性设置。当前最终外层 EXE
 Authenticode 状态为 `Valid`，签名者为科云（上海）信息技术有限公司；最终
-SHA-256 为 `FDA4D77BCC685BE7527A2279714606387A1CAD40360973EE2EFBF062414C4FA9`。
+SHA-256 为 `DCDABDDE8EF813D3247A2F71025B071B5C82F8593FC9A9D0057FED1E2E288029`。
 内嵌 SYS 的 Authenticode 状态同样为 `Valid`。这些结果只证明本机签名校验；
 其他机器的代码完整性、证书信任和撤销策略仍须实际加载验证。

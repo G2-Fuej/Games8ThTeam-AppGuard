@@ -12,7 +12,9 @@
 - Authenticode：Valid；签名者 CN=科云（上海）信息技术有限公司。
 - 交付形式：单 EXE；驱动资源名 Games8thTeamBlocker.Games8thGuard.sys。
 - 最终外层 EXE Authenticode：Valid；签名者 CN=科云（上海）信息技术有限公司。
-- 最终外层 EXE SHA-256：fda4d77bcc685be7527a2279714606387a1cad40360973ee2efbf062414c4fa9。
+- 最终外层 EXE SHA-256：dcdabdde8ef813d3247a2f71025b071b5c82f8593fc9a9d0057fed1e2e288029。
+- 启动 Logo：居中双层边框，金色 G8T 主标、白色 Games8Th.Team、青色产品名，
+  并显示 DRIVER MODE / CLI ONLY / X64；展示时间保持 2 秒。
 - 驱动释放目录：%ProgramData%\Games8Th.Team\FeilianBlocker。
 - 本机真实加载与网络阻断：VERIFIED。
 - 最终外层签名完成后的再次管理员加载：当前自动化会话不是管理员且无法启动
