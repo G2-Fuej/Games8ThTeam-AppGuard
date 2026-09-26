@@ -40,10 +40,24 @@ Check "STRUCT/provider_servername"($code -match 'public string ServiceName;') "F
 Check "SEDEBUG/unicode" (([regex]::Matches($code, "CharSet = CharSet.Unicode")).Count -ge 3) "LookupPrivilegeValueW 应为 Unicode 编组（至少 3 处 CharSet.Unicode）"
 Check "SEDEBUG/called"  ($code -match 'EnableSeDebugPrivilege\(\);') "未调用 EnableSeDebugPrivilege"
 
-# ---- 5. 主程序集成 ----
-Check "INTEG/apply_fallback" ($progText -match 'WfpEngine\.IsAvailable\(\)') "ApplyJob 未接入 WFP 回退"
-Check "INTEG/block_dir"      ($progText -match 'WfpEngine\.BlockDirectory') "未调用 BlockDirectory"
-Check "INTEG/clear"          ($progText -match 'WfpEngine\.ClearAll') "ClearAll 未调用 WFP 清理"
+# ---- 5. 主程序集成：驱动唯一运行时后端 ----
+# WfpEngine.cs remains a static WFP layout/reference audit target.  It must
+# not be reachable as a runtime fallback from the user-mode application.
+Check "RUNTIME/no_wfp_calls" (
+    ([regex]::Matches($progText, '\bWfpEngine\s*\.\s*[A-Za-z_]')).Count -eq 0
+) "Program.cs 仍调用 WfpEngine 作为运行时后端"
+Check "RUNTIME/no_firewall_calls" (
+    ([regex]::Matches($progText, '\bFirewall\s*\.\s*[A-Za-z_]')).Count -eq 0
+) "Program.cs 仍调用 Windows Firewall 作为运行时后端"
+Check "RUNTIME/apply_driver" (
+    ($progText -match 'KernelDriver\.GetStatus\(\)') -and
+    ($progText -match 'KernelDriver\.AddBlockedPath') -and
+    ($progText -match 'KernelDriver\.ContainsBlockedPath')
+) "Apply 路径缺少驱动状态、下发或回读校验"
+Check "RUNTIME/clear_driver" (
+    ($progText -match 'KernelDriver\.ClearAll\(\)') -and
+    ($progText -match 'KernelDriver\.TryQueryBlockedPaths')
+) "Clear 路径缺少驱动清理或回读校验"
 Check "INTEG/self_exclude"   ($code -match 'SelfPath') "缺少自身路径排除"
 
 # ---- 6. build.bat 包含新文件 ----

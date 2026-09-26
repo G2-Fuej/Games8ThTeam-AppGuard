@@ -19,8 +19,13 @@ if (-not $SkipBuild) {
     }
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $root 'Games8thBlocker.exe'))) {
+$appSource = Join-Path $root 'Games8thBlocker.exe'
+if (-not (Test-Path -LiteralPath $appSource)) {
     throw 'Games8thBlocker.exe was not produced'
+}
+$driverSource = Join-Path $root 'driver\build\Release\Games8thGuard.sys'
+if (-not (Test-Path -LiteralPath $driverSource)) {
+    throw 'Games8thGuard.sys was not produced; refusing to create a driver-only package'
 }
 
 if (Test-Path -LiteralPath $stage) {
@@ -30,7 +35,13 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage 'assets') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage 'driver') -Force | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $root 'Games8thBlocker.exe') -Destination $stage
+$appDestination = Join-Path $stage 'Games8thBlocker.exe'
+Copy-Item -LiteralPath $appSource -Destination $appDestination -Force
+$sourceHash = (Get-FileHash -LiteralPath $appSource -Algorithm SHA256).Hash
+$destinationHash = (Get-FileHash -LiteralPath $appDestination -Algorithm SHA256).Hash
+if ($sourceHash -ne $destinationHash) {
+    throw "Games8thBlocker.exe copy verification failed: source=$sourceHash destination=$destinationHash"
+}
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $root 'verification_2026-09-25.md') -Destination $stage
 
@@ -48,10 +59,7 @@ foreach ($file in @('load.bat', 'unload.bat')) {
     }
 }
 
-$builtDriver = Join-Path $root 'driver\build\Release\Games8thGuard.sys'
-if (Test-Path -LiteralPath $builtDriver) {
-    Copy-Item -LiteralPath $builtDriver -Destination (Join-Path $stage 'driver\Games8thGuard.sys')
-}
+Copy-Item -LiteralPath $driverSource -Destination (Join-Path $stage 'driver\Games8thGuard.sys')
 
 @'
 @echo off
@@ -60,15 +68,18 @@ start "" "%~dp0Games8thBlocker.exe"
 '@ | Set-Content -LiteralPath (Join-Path $stage 'start-Games8thBlocker.bat') -Encoding ASCII
 
 @'
-Games8Th.Team 便携版
+Games8Th.Team 便携版（强制驱动模式）
 
-1. 双击 start-Games8thBlocker.bat 或直接运行 Games8thBlocker.exe。
-2. 程序会请求管理员权限；首次启动会自动搜索飞连进程、服务和常见安装目录。
-3. WFP/Windows 防火墙路径不要求安装开发工具或 WDK。
-4. 需要清理时，在程序中点击“解除全部限制”。
-5. driver\Games8thGuard.sys 仅是可选内核路径；未加载时程序自动使用用户态 WFP。
+1. 先运行 driver\load.bat；它会自动请求管理员权限并验证驱动实际可用。
+2. 再运行 start-Games8thBlocker.bat 或直接运行 Games8thBlocker.exe。
+3. 程序只使用 Games8thGuard.sys 限制网络；驱动未通过服务、设备和
+   QUERY_PATHS 三项校验时，操作结果为 UNVERIFIED，不会回退到 WFP/防火墙。
+4. driver\Games8thGuard.sys 必须有当前 Windows 策略信任的有效签名。
+   便携包不包含签名绕过，也不会修改 Secure Boot、DSE 或测试签名设置。
+5. 需要清理时，运行 cli clear 或在程序中点击“解除全部限制”。
 
 命令行：
+  Games8thBlocker.exe cli driver-status
   Games8thBlocker.exe cli feilian
   Games8thBlocker.exe cli block "C:\Path\To\App"
   Games8thBlocker.exe cli list

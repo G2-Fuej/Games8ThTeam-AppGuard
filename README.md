@@ -1,6 +1,8 @@
 # 飞连屏蔽插件
 
-Windows 软件限制工具的 C# 实现，包含用户态 WFP 回退、Windows 防火墙规则、组件 ACL 和进程守护；内核部分位于 `driver/`。
+Windows 软件限制工具的 C# 实现。网络限制强制使用 `Games8thGuard.sys`
+内核驱动；用户态 WFP 和 Windows 防火墙代码仅用于结构/兼容性审计，
+不会作为运行时回退。组件 ACL 和进程守护仍作为辅助措施。
 
 ## 构建
 
@@ -18,8 +20,12 @@ build.bat
 powershell -ExecutionPolicy Bypass -File .\package_release.ps1
 ```
 
-产物位于 `release\Games8thBlocker-portable\`。便携版默认使用用户态
-WFP/Windows 防火墙；驱动未加载时会自动回退，不影响普通用户直接使用。
+产物位于 `release\Games8thBlocker-portable\`。便携版包含 EXE、驱动、
+提权/加载脚本和校验清单。程序在驱动服务、设备句柄和 `QUERY_PATHS`
+三项均验证成功前不会写入网络限制，也不会回退到 WFP/Windows 防火墙。
+驱动必须具有被当前 Windows 代码完整性策略信任的有效签名；当前仓库中的
+历史 `Games8thGuard.sys` 若显示 `NotSigned`，加载结果必须标记为
+`UNVERIFIED`。发布包本身不能绕过 Secure Boot、DSE 或签名策略。
 首次启动且没有配置文件时，GUI 会自动发现名称或路径包含“飞连/Feilian”
 的进程、服务和常见安装目录；CLI 可直接运行：
 
@@ -31,10 +37,13 @@ Games8thBlocker.exe cli feilian
 
 - `audit_g8tguard.ps1`：驱动静态审计，27 项断言。
 - `audit_bsod.ps1`：驱动蓝屏风险静态审计，30 项断言。
-- `audit_wfpengine.ps1`：WFP 结构与集成审计，21 项断言。
+- `audit_wfpengine.ps1`：WFP 结构静态审计及“禁止运行时回退”集成审计，22 项断言。
 - `package_release.ps1`：生成无需开发环境的便携发布目录和 SHA-256 清单。
 - `verification_2026-09-25.md`：本机三轮验证记录。
 
-本次验证中三套审计均连续三轮通过；本机未安装或运行飞连，真实目标拦截结果保持未验证。
+本次验证中三套审计需要连续三轮通过；本机未安装或运行飞连时，
+真实目标拦截结果保持 `UNVERIFIED`，不能用静态审计代替运行时证据。
 
-驱动测试加载使用 `\??\C:\...` 形式的 NT `ImagePath`。首次启用测试签名后需要重启，且应优先使用 `elevated_load_20260925.ps1` 获取可审计的服务状态和清理结果。
+`driver\load.bat` 会自动请求管理员权限、验证 Authenticode、创建服务、
+启动服务，并调用 `cli driver-status` 验证设备句柄和 `QUERY_PATHS`。
+脚本不会修改测试签名、Secure Boot 或其他代码完整性设置。

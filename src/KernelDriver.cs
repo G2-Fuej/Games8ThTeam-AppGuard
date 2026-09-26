@@ -1,190 +1,554 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Games8thTeamBlocker
 {
     /// <summary>
-    /// 与 Games8thGuard.sys 内核驱动通信的封装。
-    /// 通过 DeviceIoControl 下发/查询被限制进程路径列表。
-    /// 驱动在 ALE 授权连接层按进程路径拦截所有网络连接（含本地代理流量）。
+    /// Games8thGuard.sys 的唯一网络限制后端。
+    /// 成功标准不是“规则/服务名称存在”，而是服务、设备和 QUERY_PATHS
+    /// 三层都真实可用，并且每次下发后都能回读到完整路径。
     /// </summary>
     public static class KernelDriver
     {
-        // 设备符号链接
-        private const string G8T_DEVICE_PATH = @"\\.\G8TGuard";
+        private const string ServiceName = "Games8thGuard";
+        private const string DevicePath = @"\\.\G8TGuard";
 
-        // IOCTL 定义（与驱动 g8tguard.c 保持一致）
-        private const uint FILE_DEVICE_UNKNOWN = 0x22;
-        private const uint METHOD_BUFFERED = 0;
-        private const uint FILE_ANY_ACCESS = 0;
-        private const uint G8T_IOCTL_BASE = 0x8000;
+        private const uint FileDeviceUnknown = 0x22;
+        private const uint MethodBuffered = 0;
+        private const uint FileAnyAccess = 0;
+        private const uint IoctlBase = 0x8000;
+        private const int MaxBlockedPaths = 64;
+        private const int MaxPathLen = 520;
+        private const int ErrorSuccess = 0;
+        private const int ErrorServiceDoesNotExist = 1060;
+        private const int ErrorServiceNotActive = 1062;
+        private const int ServiceRunning = 4;
+        private const uint ScManagerConnect = 0x0001;
+        private const uint ServiceQueryStatus = 0x0004;
 
-        private static readonly uint IOCTL_G8T_BLOCK_PATH =
-            CTL_CODE(FILE_DEVICE_UNKNOWN, G8T_IOCTL_BASE + 1, METHOD_BUFFERED, FILE_ANY_ACCESS);
-        private static readonly uint IOCTL_G8T_UNBLOCK_PATH =
-            CTL_CODE(FILE_DEVICE_UNKNOWN, G8T_IOCTL_BASE + 2, METHOD_BUFFERED, FILE_ANY_ACCESS);
-        private static readonly uint IOCTL_G8T_QUERY_PATHS =
-            CTL_CODE(FILE_DEVICE_UNKNOWN, G8T_IOCTL_BASE + 3, METHOD_BUFFERED, FILE_ANY_ACCESS);
-        private static readonly uint IOCTL_G8T_CLEAR_ALL =
-            CTL_CODE(FILE_DEVICE_UNKNOWN, G8T_IOCTL_BASE + 4, METHOD_BUFFERED, FILE_ANY_ACCESS);
+        private static readonly uint BlockPathCode =
+            CtlCode(FileDeviceUnknown, IoctlBase + 1, MethodBuffered, FileAnyAccess);
+        private static readonly uint UnblockPathCode =
+            CtlCode(FileDeviceUnknown, IoctlBase + 2, MethodBuffered, FileAnyAccess);
+        private static readonly uint QueryPathsCode =
+            CtlCode(FileDeviceUnknown, IoctlBase + 3, MethodBuffered, FileAnyAccess);
+        private static readonly uint ClearAllCode =
+            CtlCode(FileDeviceUnknown, IoctlBase + 4, MethodBuffered, FileAnyAccess);
 
-        private const int MAX_BLOCKED_PATHS = 64;
-        private const int MAX_PATH_LEN = 520;
+        private static int lastErrorCode;
+        private static string lastErrorMessage = "";
 
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct G8T_BLOCKED_PATHS
+        public sealed class DriverStatus
         {
-            public uint Count;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = MAX_BLOCKED_PATHS * MAX_PATH_LEN)]
-            public char[] Raw;
+            public bool ServicePresent;
+            public bool ServiceRunning;
+            public bool DeviceOpen;
+            public bool IoctlResponsive;
+            public bool IsLoaded;
+            public int ErrorCode;
+            public string ErrorMessage;
+            public string Summary;
+
+            public DriverStatus()
+            {
+                ErrorMessage = "";
+                Summary = "";
+            }
         }
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr CreateFileW(
-            string lpFileName,
-            uint dwDesiredAccess,
-            uint dwShareMode,
-            IntPtr lpSecurityAttributes,
-            uint dwCreationDisposition,
-            uint dwFlagsAndAttributes,
-            IntPtr hTemplateFile);
+        public static int LastErrorCode { get { return lastErrorCode; } }
+        public static string LastErrorMessage { get { return lastErrorMessage; } }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ServiceStatusProcess
+        {
+            public int ServiceType;
+            public int CurrentState;
+            public int ControlsAccepted;
+            public int Win32ExitCode;
+            public int ServiceSpecificExitCode;
+            public int CheckPoint;
+            public int WaitHint;
+            public int ProcessId;
+            public int ServiceFlags;
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr OpenSCManager(
+            string machineName,
+            string databaseName,
+            uint desiredAccess);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr OpenService(
+            IntPtr scm,
+            string serviceName,
+            uint desiredAccess);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool QueryServiceStatusEx(
+            IntPtr service,
+            int infoLevel,
+            out ServiceStatusProcess status,
+            int bufferSize,
+            out int bytesNeeded);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool CloseServiceHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool DeviceIoControl(
-            IntPtr hDevice,
-            uint dwIoControlCode,
-            IntPtr lpInBuffer,
-            uint nInBufferSize,
-            IntPtr lpOutBuffer,
-            uint nOutBufferSize,
-            out uint lpBytesReturned,
-            IntPtr lpOverlapped);
+            IntPtr device,
+            uint controlCode,
+            IntPtr inputBuffer,
+            uint inputBufferSize,
+            IntPtr outputBuffer,
+            uint outputBufferSize,
+            out uint bytesReturned,
+            IntPtr overlapped);
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool CloseHandle(IntPtr hObject);
+        private static extern bool CloseHandle(IntPtr handle);
 
-        private const uint GENERIC_READ = 0x80000000;
-        private const uint GENERIC_WRITE = 0x40000000;
-        private const uint OPEN_EXISTING = 3;
-        private const uint FILE_SHARE_READ = 1;
-        private const uint FILE_SHARE_WRITE = 2;
+        private const uint GenericRead = 0x80000000;
+        private const uint GenericWrite = 0x40000000;
+        private const uint FileShareRead = 0x00000001;
+        private const uint FileShareWrite = 0x00000002;
+        private const uint OpenExisting = 3;
 
-        private static uint CTL_CODE(uint deviceType, uint function, uint method, uint access)
+        private static uint CtlCode(uint deviceType, uint function, uint method, uint access)
         {
             return (deviceType << 16) | (access << 14) | (function << 2) | method;
         }
 
-        /// <summary>检查内核驱动是否已加载</summary>
-        public static bool IsLoaded()
+        public static DriverStatus GetStatus()
         {
-            IntPtr h = CreateFileW(G8T_DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-            if (h.ToInt64() == -1)
-                return false;
-            CloseHandle(h);
-            return true;
-        }
+            DriverStatus status = new DriverStatus();
+            int code;
+            string message;
 
-        /// <summary>向驱动下发一个被限制路径</summary>
-        public static bool AddBlockedPath(string path)
-        {
-            return SendString(IOCTL_G8T_BLOCK_PATH, path);
-        }
+            if (!TryGetServiceState(out status.ServicePresent, out status.ServiceRunning,
+                                    out code, out message))
+            {
+                status.ErrorCode = code;
+                status.ErrorMessage = message;
+                status.Summary = message;
+                return status;
+            }
 
-        /// <summary>从驱动移除一个被限制路径</summary>
-        public static bool RemoveBlockedPath(string path)
-        {
-            return SendString(IOCTL_G8T_UNBLOCK_PATH, path);
-        }
+            if (!status.ServiceRunning)
+            {
+                status.ErrorCode = ErrorServiceNotActive;
+                status.ErrorMessage = "服务存在但未处于 RUNNING 状态";
+                status.Summary = status.ErrorMessage;
+                return status;
+            }
 
-        /// <summary>清空驱动中的全部被限制路径</summary>
-        public static bool ClearAll()
-        {
-            return SendString(IOCTL_G8T_CLEAR_ALL, "");
-        }
+            IntPtr device = OpenDevice(out code, out message);
+            if (device == IntPtr.Zero)
+            {
+                status.ErrorCode = code;
+                status.ErrorMessage = message;
+                status.Summary = "服务 RUNNING，但设备句柄不可用：" + message;
+                return status;
+            }
 
-        /// <summary>查询驱动中当前被限制的路径列表</summary>
-        public static string[] QueryBlockedPaths()
-        {
-            string[] result = new string[0];
-            IntPtr h = CreateFileW(G8T_DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-            if (h.ToInt64() == -1)
-                return result;
-
+            status.DeviceOpen = true;
             try
             {
-                int bufSize = MAX_BLOCKED_PATHS * MAX_PATH_LEN * 2 + 8;
-                IntPtr outBuf = Marshal.AllocHGlobal(bufSize);
-                uint bytesReturned = 0;
-                try
+                string[] paths;
+                if (!TryQueryBlockedPaths(device, out paths, out code, out message))
                 {
-                    bool ok = DeviceIoControl(h, IOCTL_G8T_QUERY_PATHS, IntPtr.Zero, 0,
-                                              outBuf, (uint)bufSize, out bytesReturned, IntPtr.Zero);
-                    if (ok && bytesReturned >= 4)
-                    {
-                        uint count = (uint)Marshal.ReadInt32(outBuf);
-                        // 数据区为 UTF-16 字符串数组（每项 MAX_PATH_LEN 字符）
-                        System.Collections.Generic.List<string> paths = new System.Collections.Generic.List<string>();
-                        for (uint i = 0; i < count && i < MAX_BLOCKED_PATHS; i++)
-                        {
-                            IntPtr p = new IntPtr(outBuf.ToInt64() + 4 + i * MAX_PATH_LEN * 2);
-                            string s = Marshal.PtrToStringUni(p, MAX_PATH_LEN);
-                            if (s != null)
-                            {
-                                int nul = s.IndexOf('\0');
-                                if (nul >= 0) s = s.Substring(0, nul);
-                                if (s.Length > 0) paths.Add(s);
-                            }
-                        }
-                        result = paths.ToArray();
-                    }
+                    status.ErrorCode = code;
+                    status.ErrorMessage = message;
+                    status.Summary = "设备可打开，但 QUERY_PATHS 失败：" + message;
+                    return status;
                 }
-                finally
-                {
-                    Marshal.FreeHGlobal(outBuf);
-                }
+
+                status.IoctlResponsive = true;
+                status.IsLoaded = true;
+                status.Summary = "服务 RUNNING、设备可打开、QUERY_PATHS 响应正常（当前 " +
+                                 paths.Length.ToString() + " 条路径）";
+                return status;
             }
             finally
             {
-                CloseHandle(h);
+                CloseHandle(device);
             }
-            return result;
+        }
+
+        public static bool IsLoaded()
+        {
+            return GetStatus().IsLoaded;
+        }
+
+        public static bool AddBlockedPath(string path)
+        {
+            string normalized;
+            if (!TryNormalizePath(path, out normalized))
+            {
+                SetError(87, "目标路径不存在或无法规范化");
+                return false;
+            }
+
+            if (!SendString(BlockPathCode, normalized))
+                return false;
+
+            string[] paths;
+            string error;
+            if (!TryQueryBlockedPaths(out paths, out error))
+            {
+                SetError(lastErrorCode, error);
+                return false;
+            }
+            if (!ContainsPath(paths, normalized))
+            {
+                SetError(1168, "驱动未回读到已下发的完整路径");
+                return false;
+            }
+            return true;
+        }
+
+        public static bool RemoveBlockedPath(string path)
+        {
+            string normalized;
+            if (!TryNormalizePath(path, out normalized))
+            {
+                SetError(87, "目标路径不存在或无法规范化");
+                return false;
+            }
+
+            if (!SendString(UnblockPathCode, normalized))
+                return false;
+
+            string[] paths;
+            string error;
+            if (!TryQueryBlockedPaths(out paths, out error))
+            {
+                SetError(lastErrorCode, error);
+                return false;
+            }
+            if (ContainsPath(paths, normalized))
+            {
+                SetError(1168, "驱动清理后仍回读到目标路径");
+                return false;
+            }
+            return true;
+        }
+
+        public static bool ClearAll()
+        {
+            if (!SendString(ClearAllCode, ""))
+                return false;
+
+            string[] paths;
+            string error;
+            if (!TryQueryBlockedPaths(out paths, out error))
+            {
+                SetError(lastErrorCode, error);
+                return false;
+            }
+            if (paths.Length != 0)
+            {
+                SetError(1168, "驱动清理后仍有 " + paths.Length.ToString() + " 条路径");
+                return false;
+            }
+            return true;
+        }
+
+        public static string[] QueryBlockedPaths()
+        {
+            string[] paths;
+            string error;
+            if (TryQueryBlockedPaths(out paths, out error))
+                return paths;
+            return new string[0];
+        }
+
+        public static bool TryQueryBlockedPaths(out string[] paths, out string error)
+        {
+            IntPtr device = OpenDevice(out lastErrorCode, out error);
+            if (device == IntPtr.Zero)
+            {
+                paths = new string[0];
+                lastErrorMessage = error;
+                return false;
+            }
+
+            try
+            {
+                bool result = TryQueryBlockedPaths(device, out paths, out lastErrorCode, out error);
+                lastErrorMessage = error ?? "";
+                return result;
+            }
+            finally
+            {
+                CloseHandle(device);
+            }
+        }
+
+        public static bool ContainsBlockedPath(string path)
+        {
+            string normalized;
+            if (!TryNormalizePath(path, out normalized))
+                return false;
+
+            string[] paths;
+            string error;
+            if (!TryQueryBlockedPaths(out paths, out error))
+                return false;
+            return ContainsPath(paths, normalized);
+        }
+
+        private static bool TryGetServiceState(
+            out bool present,
+            out bool running,
+            out int errorCode,
+            out string error)
+        {
+            present = false;
+            running = false;
+            errorCode = ErrorSuccess;
+            error = "";
+
+            IntPtr scm = OpenSCManager(null, null, ScManagerConnect);
+            if (scm == IntPtr.Zero)
+            {
+                errorCode = Marshal.GetLastWin32Error();
+                error = "无法打开 SCM：" + new Win32Exception(errorCode).Message;
+                return false;
+            }
+
+            IntPtr service = IntPtr.Zero;
+            try
+            {
+                service = OpenService(scm, ServiceName, ServiceQueryStatus);
+                if (service == IntPtr.Zero)
+                {
+                    errorCode = Marshal.GetLastWin32Error();
+                    if (errorCode == ErrorServiceDoesNotExist)
+                        error = "服务 " + ServiceName + " 不存在";
+                    else
+                        error = "无法打开服务 " + ServiceName + "：" +
+                                new Win32Exception(errorCode).Message;
+                    return false;
+                }
+
+                present = true;
+                ServiceStatusProcess serviceStatus;
+                int bytesNeeded;
+                if (!QueryServiceStatusEx(service, 0, out serviceStatus,
+                                          Marshal.SizeOf(typeof(ServiceStatusProcess)),
+                                          out bytesNeeded))
+                {
+                    errorCode = Marshal.GetLastWin32Error();
+                    error = "QueryServiceStatusEx 失败：" +
+                            new Win32Exception(errorCode).Message;
+                    return false;
+                }
+
+                running = serviceStatus.CurrentState == ServiceRunning;
+                return true;
+            }
+            finally
+            {
+                if (service != IntPtr.Zero) CloseServiceHandle(service);
+                CloseServiceHandle(scm);
+            }
+        }
+
+        private static IntPtr OpenDevice(out int errorCode, out string error)
+        {
+            IntPtr device = CreateFile(
+                DevicePath,
+                GenericRead | GenericWrite,
+                FileShareRead | FileShareWrite,
+                IntPtr.Zero,
+                OpenExisting,
+                0,
+                IntPtr.Zero);
+
+            if (device.ToInt64() != -1 && device != IntPtr.Zero)
+            {
+                errorCode = ErrorSuccess;
+                error = "";
+                return device;
+            }
+
+            errorCode = Marshal.GetLastWin32Error();
+            error = "CreateFile(" + DevicePath + ") 失败：" +
+                    new Win32Exception(errorCode).Message;
+            return IntPtr.Zero;
+        }
+
+        private static bool TryQueryBlockedPaths(
+            IntPtr device,
+            out string[] paths,
+            out int errorCode,
+            out string error)
+        {
+            paths = new string[0];
+            errorCode = ErrorSuccess;
+            error = "";
+
+            int bufferSize = checked(4 + MaxBlockedPaths * MaxPathLen * 2);
+            IntPtr output = Marshal.AllocHGlobal(bufferSize);
+            try
+            {
+                uint bytesReturned;
+                bool ok = DeviceIoControl(
+                    device,
+                    QueryPathsCode,
+                    IntPtr.Zero,
+                    0,
+                    output,
+                    (uint)bufferSize,
+                    out bytesReturned,
+                    IntPtr.Zero);
+                if (!ok)
+                {
+                    errorCode = Marshal.GetLastWin32Error();
+                    error = "QUERY_PATHS DeviceIoControl 失败：" +
+                            new Win32Exception(errorCode).Message;
+                    return false;
+                }
+                if (bytesReturned < 4)
+                {
+                    errorCode = 13;
+                    error = "QUERY_PATHS 返回长度不足";
+                    return false;
+                }
+
+                uint count = unchecked((uint)Marshal.ReadInt32(output));
+                if (count > MaxBlockedPaths)
+                {
+                    errorCode = 13;
+                    error = "QUERY_PATHS 返回非法路径数量：" + count.ToString();
+                    return false;
+                }
+
+                List<string> result = new List<string>();
+                for (uint i = 0; i < count; i++)
+                {
+                    IntPtr item = new IntPtr(output.ToInt64() + 4 +
+                                             i * MaxPathLen * 2);
+                    string value = Marshal.PtrToStringUni(item, MaxPathLen);
+                    if (value == null) value = "";
+                    int nul = value.IndexOf('\0');
+                    if (nul >= 0) value = value.Substring(0, nul);
+                    if (value.Length == 0)
+                    {
+                        errorCode = 13;
+                        error = "QUERY_PATHS 返回空路径";
+                        return false;
+                    }
+                    result.Add(value);
+                }
+                paths = result.ToArray();
+                lastErrorCode = ErrorSuccess;
+                lastErrorMessage = "";
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(output);
+            }
         }
 
         private static bool SendString(uint ioctl, string value)
         {
-            IntPtr h = CreateFileW(G8T_DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-            if (h.ToInt64() == -1)
+            if (value == null) value = "";
+            if (value.Length >= MaxPathLen)
+            {
+                SetError(206, "路径长度超过驱动限制");
+                return false;
+            }
+
+            IntPtr device = OpenDevice(out lastErrorCode, out lastErrorMessage);
+            if (device == IntPtr.Zero)
+                return false;
+
+            byte[] data = Encoding.Unicode.GetBytes(value + "\0");
+            IntPtr input = Marshal.AllocHGlobal(data.Length);
+            try
+            {
+                Marshal.Copy(data, 0, input, data.Length);
+                uint bytesReturned;
+                bool ok = DeviceIoControl(
+                    device,
+                    ioctl,
+                    input,
+                    (uint)data.Length,
+                    IntPtr.Zero,
+                    0,
+                    out bytesReturned,
+                    IntPtr.Zero);
+                if (!ok)
+                {
+                    lastErrorCode = Marshal.GetLastWin32Error();
+                    lastErrorMessage = "DeviceIoControl 失败：" +
+                                       new Win32Exception(lastErrorCode).Message;
+                    return false;
+                }
+                lastErrorCode = ErrorSuccess;
+                lastErrorMessage = "";
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(input);
+                CloseHandle(device);
+            }
+        }
+
+        private static bool TryNormalizePath(string path, out string normalized)
+        {
+            normalized = "";
+            if (string.IsNullOrWhiteSpace(path))
                 return false;
 
             try
             {
-                byte[] data = Encoding.Unicode.GetBytes(value + "\0");
-                IntPtr inBuf = Marshal.AllocHGlobal(data.Length);
-                Marshal.Copy(data, 0, inBuf, data.Length);
-                uint bytesReturned = 0;
-                try
-                {
-                    bool ok = DeviceIoControl(h, ioctl, inBuf, (uint)data.Length,
-                                              IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero);
-                    return ok;
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(inBuf);
-                }
+                string candidate = path.Trim().Trim('"');
+                if (!File.Exists(candidate) && !Directory.Exists(candidate))
+                    return false;
+                normalized = Path.GetFullPath(candidate).Replace('/', '\\');
+                return normalized.Length > 0;
             }
-            finally
+            catch
             {
-                CloseHandle(h);
+                return false;
             }
+        }
+
+        private static bool ContainsPath(string[] paths, string expected)
+        {
+            foreach (string path in paths)
+            {
+                if (string.Equals(path, expected, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private static void SetError(int code, string message)
+        {
+            lastErrorCode = code;
+            lastErrorMessage = message ?? "";
         }
     }
 }

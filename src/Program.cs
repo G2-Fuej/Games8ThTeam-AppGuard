@@ -204,6 +204,11 @@ namespace Games8thTeamBlocker
     {
         public const string RulePrefix = "Games8th_Blocker";
 
+        private static string PsQuote(string value)
+        {
+            return "'" + (value ?? "").Replace("'", "''") + "'";
+        }
+
         public static bool IsFirewallEnabled()
         {
             // ConvertTo-Csv 会把布尔序列化成 "value__"/"1"，且可能带 BOM/CRLF。
@@ -241,34 +246,64 @@ namespace Games8thTeamBlocker
         // returns true on success
         public static bool AddBlockRule(string exePath, string direction)
         {
+            if (string.IsNullOrWhiteSpace(exePath) ||
+                !File.Exists(exePath) ||
+                (direction != "in" && direction != "out"))
+                return false;
+
             string name = RuleName(exePath, direction);
-            string norm = exePath.Replace('/', '\\');
-            string script = "if (-not (Get-NetFirewallRule -DisplayName " + Cmd.Q + name + Cmd.Q + " -ErrorAction SilentlyContinue)) { " +
-                "New-NetFirewallRule -DisplayName " + Cmd.Q + name + Cmd.Q +
-                " -Direction " + (direction == "out" ? "Outbound" : "Inbound") +
-                " -Action Block -Program " + Cmd.Q + norm + Cmd.Q +
-                " -Enabled True -ErrorAction SilentlyContinue; } " +
-                "if (Get-NetFirewallRule -DisplayName " + Cmd.Q + name + Cmd.Q + " -ErrorAction SilentlyContinue) { 'OK' } else { 'FAIL'; exit 1 }";
+            string norm;
+            try { norm = Path.GetFullPath(exePath).Replace('/', '\\'); }
+            catch { return false; }
+
+            string psName = PsQuote(name);
+            string psPath = PsQuote(norm);
+            string psDirection = PsQuote(direction == "out" ? "Outbound" : "Inbound");
+            string script =
+                "$ErrorActionPreference='Stop'; " +
+                "$name=" + psName + "; $expected=" + psPath + "; $direction=" + psDirection + "; " +
+                "$old=@(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue); " +
+                "if($old.Count -gt 0){$old | Remove-NetFirewallRule -ErrorAction Stop}; " +
+                "New-NetFirewallRule -DisplayName $name -Direction $direction -Action Block " +
+                "-Program $expected -Enabled True -Profile Domain,Private,Public -ErrorAction Stop | Out-Null; " +
+                "$rule=@(Get-NetFirewallRule -DisplayName $name -ErrorAction Stop); " +
+                "$valid=$false; " +
+                "foreach($r in $rule){" +
+                "if(([string]$r.Direction -eq $direction) -and ([string]$r.Action -eq 'Block') -and " +
+                "([string]$r.Enabled -eq 'True')){" +
+                "$apps=@(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $r -ErrorAction Stop); " +
+                "foreach($a in $apps){" +
+                "try{$actual=[IO.Path]::GetFullPath([string]$a.Program)}catch{$actual=[string]$a.Program}; " +
+                "if($actual -and [String]::Equals($actual,$expected,[StringComparison]::OrdinalIgnoreCase)){$valid=$true}" +
+                "}}}; " +
+                "if($valid){'BOUND_OK'}else{" +
+                "$rule | Remove-NetFirewallRule -ErrorAction SilentlyContinue; 'BIND_FAIL'; exit 2}";
             Cmd.RunResult rr = Cmd.RunPSEx(script);
-            return rr.Succeeded && rr.Output.Contains("OK");
+            return rr.Succeeded && rr.Output.Contains("BOUND_OK");
         }
 
         public static bool RemoveRule(string ruleName)
         {
-            string script = "Remove-NetFirewallRule -DisplayName " + Cmd.Q + ruleName + Cmd.Q +
-                " -ErrorAction SilentlyContinue; " +
-                "if (Get-NetFirewallRule -DisplayName " + Cmd.Q + ruleName + Cmd.Q + " -ErrorAction SilentlyContinue) { 'FAIL'; exit 1 } else { 'OK' }";
+            string script = "$ErrorActionPreference='Stop'; " +
+                "$name=" + PsQuote(ruleName) + "; " +
+                "$old=@(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue); " +
+                "if($old.Count -gt 0){$old | Remove-NetFirewallRule -ErrorAction Stop}; " +
+                "$left=@(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue); " +
+                "if($left.Count -eq 0){'REMOVED_OK'}else{'REMOVE_FAIL';exit 2}";
             Cmd.RunResult rr = Cmd.RunPSEx(script);
-            return rr.Succeeded && rr.Output.Contains("OK");
+            return rr.Succeeded && rr.Output.Contains("REMOVED_OK");
         }
 
         public static List<string> ListRules()
         {
-            string script = "Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'Games8th_Blocker*' } | " +
-                "Select-Object -ExpandProperty DisplayName";
-            string output = Cmd.RunPS(script);
+            string script = "$ErrorActionPreference='Stop'; " +
+                "Get-NetFirewallRule -ErrorAction Stop | " +
+                "Where-Object { $_.DisplayName -like 'Games8th_Blocker*' } | " +
+                "ForEach-Object { $_.DisplayName }";
+            Cmd.RunResult rr = Cmd.RunPSEx(script);
             List<string> list = new List<string>();
-            string[] lines = output.Split('\n');
+            if (!rr.Succeeded) return list;
+            string[] lines = rr.Output.Split('\n');
             foreach (string ln in lines)
             {
                 string t = ln.Trim();
@@ -277,24 +312,82 @@ namespace Games8thTeamBlocker
             return list;
         }
 
+        public static bool IsRuleBound(string exePath, string direction)
+        {
+            if (string.IsNullOrWhiteSpace(exePath) ||
+                !File.Exists(exePath) ||
+                (direction != "in" && direction != "out"))
+                return false;
+
+            string norm;
+            try { norm = Path.GetFullPath(exePath).Replace('/', '\\'); }
+            catch { return false; }
+
+            string name = RuleName(exePath, direction);
+            string script =
+                "$ErrorActionPreference='Stop'; " +
+                "$name=" + PsQuote(name) + "; $expected=" + PsQuote(norm) + "; " +
+                "$direction=" + PsQuote(direction == "out" ? "Outbound" : "Inbound") + "; " +
+                "$rules=@(Get-NetFirewallRule -DisplayName $name -ErrorAction Stop); " +
+                "$bound=$false; " +
+                "foreach($r in $rules){" +
+                "if(([string]$r.Direction -eq $direction) -and ([string]$r.Action -eq 'Block') -and " +
+                "([string]$r.Enabled -eq 'True')){" +
+                "$apps=@(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $r -ErrorAction Stop); " +
+                "foreach($a in $apps){" +
+                "try{$actual=[IO.Path]::GetFullPath([string]$a.Program)}catch{$actual=[string]$a.Program}; " +
+                "if($actual -and [String]::Equals($actual,$expected,[StringComparison]::OrdinalIgnoreCase)){$bound=$true}" +
+                "}}}; " +
+                "if($bound){'BOUND_OK'}else{'BIND_FAIL';exit 2}";
+            Cmd.RunResult rr = Cmd.RunPSEx(script);
+            return rr.Succeeded && rr.Output.Contains("BOUND_OK");
+        }
+
+        public static bool RemoveAllRules(out int removed, out int remaining)
+        {
+            removed = 0;
+            remaining = -1;
+            string script =
+                "$ErrorActionPreference='Stop'; " +
+                "$old=@(Get-NetFirewallRule -ErrorAction Stop | " +
+                "Where-Object { $_.DisplayName -like 'Games8th_Blocker*' }); " +
+                "if($old.Count -gt 0){$old | Remove-NetFirewallRule -ErrorAction Stop}; " +
+                "$left=@(Get-NetFirewallRule -ErrorAction Stop | " +
+                "Where-Object { $_.DisplayName -like 'Games8th_Blocker*' }); " +
+                "'REMOVED=' + $old.Count; 'REMAINING=' + $left.Count; " +
+                "if($left.Count -ne 0){exit 2}";
+            Cmd.RunResult rr = Cmd.RunPSEx(script);
+            if (!rr.Succeeded) return false;
+            removed = ParseMarker(rr.Output, "REMOVED=");
+            remaining = ParseMarker(rr.Output, "REMAINING=");
+            return remaining == 0;
+        }
+
         public static int RemoveAllRules()
         {
-            string script = "$before = @(Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'Games8th_Blocker*' }).Count; " +
-                "Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'Games8th_Blocker*' } | " +
-                "ForEach-Object { Remove-NetFirewallRule -DisplayName $_.DisplayName -ErrorAction SilentlyContinue }; $before";
-            string output = Cmd.RunPS(script);
-            string t = output.Trim();
-            int n = 0;
-            int.TryParse(t, out n);
-            return n;
+            int removed, remaining;
+            return RemoveAllRules(out removed, out remaining) ? removed : -1;
+        }
+
+        private static int ParseMarker(string output, string marker)
+        {
+            string[] lines = (output ?? "").Split('\n');
+            foreach (string line in lines)
+            {
+                string t = line.Trim();
+                if (t.StartsWith(marker, StringComparison.OrdinalIgnoreCase))
+                {
+                    int value;
+                    if (int.TryParse(t.Substring(marker.Length), out value)) return value;
+                }
+            }
+            return -1;
         }
 
         // Is an exe currently fully blocked (both rules exist)?
         public static bool IsBlocked(string exePath)
         {
-            List<string> rules = ListRules();
-            return rules.Exists(x => string.Equals(x, RuleName(exePath, "out"), StringComparison.OrdinalIgnoreCase)) &&
-                   rules.Exists(x => string.Equals(x, RuleName(exePath, "in"), StringComparison.OrdinalIgnoreCase));
+            return IsRuleBound(exePath, "out") && IsRuleBound(exePath, "in");
         }
     }
 
@@ -1639,17 +1732,19 @@ namespace Games8thTeamBlocker
         {
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = Application.ExecutablePath;
-                psi.UseShellExecute = true;
-                psi.Verb = "runas";
-                Process.Start(psi);
-                log.Ok("正在以管理员身份重启 ...");
-                Close();
+                if (Program.TryRelaunchElevated(new string[0]))
+                {
+                    log.Ok("正在以管理员身份重启 ...");
+                    Close();
+                }
+                else
+                {
+                    log.Warn("[UNVERIFIED] 提权被取消或失败，未执行系统修改");
+                }
             }
             catch
             {
-                log.Fail("提权被取消或失败");
+                log.Warn("[UNVERIFIED] 提权被取消或失败，未执行系统修改");
             }
         }
 
@@ -1697,38 +1792,58 @@ namespace Games8thTeamBlocker
                 return;
             }
 
-            // 1. Firewall ensure
-            log.Info("[防火墙] 检查 Windows 防火墙状态...");
-            try
+            // 网络限制的唯一运行时后端是 Games8thGuard.sys。
+            // 驱动未通过服务、设备和 QUERY_PATHS 三项校验时，立即停止本次写入，
+            // 避免 ACL/守护成功被误报为网络限制成功。
+            KernelDriver.DriverStatus driver = KernelDriver.GetStatus();
+            if (!driver.IsLoaded)
             {
-                if (Firewall.IsFirewallEnabled())
-                {
-                    log.Ok("[防火墙] Windows 防火墙已开启");
-                }
-                else
-                {
-                    log.Warn("[防火墙] Windows 防火墙未开启，正在启用...");
-                    string r = Firewall.EnableFirewall();
-                    log.Ok("[防火墙] 已启用: " + r.Trim());
-                }
+                foreach (Target t in targets)
+                    if (t.Enabled) t.State = "⚠ 未验证";
+                log.Warn("[UNVERIFIED] 强制驱动模式未生效：" + driver.Summary);
+                SaveConfig();
+                RefreshGrid();
+                return;
             }
-            catch (Exception ex)
-            {
-                log.Fail("[防火墙] 状态检查失败: " + ex.Message);
-            }
+            log.Ok("[驱动] 已验证：服务 RUNNING、设备句柄可用、QUERY_PATHS 响应正常");
 
-            // 2. Kaspersky (optional enhancement — quiet if not installed)
+            // Kaspersky (optional enhancement — quiet if not installed)
             if (Kaspersky.IsInstalled())
             {
                 log.Info("[Kaspersky] 检测到 Kaspersky（可选增强）：" + Kaspersky.AvpPath);
             }
 
-            // 3. For each target
-            int okCount = 0, failCount = 0, total = 0;
+            // 2. For each target. 目录路径由驱动按路径边界匹配其下进程；
+            // 单文件目标必须是 EXE，不能把 DLL 的 ACL 状态冒充成网络限制。
+            int okCount = 0, failCount = 0, total = 0, driverOkCount = 0, driverTotal = 0;
             foreach (Target t in targets)
             {
                 if (!t.Enabled) continue;
                 log.Step("处理目标: " + t.Name);
+
+                bool driverTarget = Directory.Exists(t.Path_) ||
+                                    (File.Exists(t.Path_) && Components.IsExe(t.Path_));
+                if (!driverTarget)
+                {
+                    failCount++;
+                    log.Warn("[UNVERIFIED] 驱动目标必须是现有目录或 EXE：" + t.Path_);
+                    t.State = "⚠ 未验证";
+                    continue;
+                }
+
+                driverTotal++;
+                bool targetDriverOk = KernelDriver.AddBlockedPath(t.Path_) &&
+                                      KernelDriver.ContainsBlockedPath(t.Path_);
+                if (!targetDriverOk)
+                {
+                    failCount++;
+                    log.Warn("[UNVERIFIED] 驱动路径下发/回读失败：" + t.Path_ +
+                             "；" + KernelDriver.LastErrorMessage);
+                    t.State = "⚠ 未验证";
+                    continue;
+                }
+                driverOkCount++;
+                log.Ok("驱动已绑定目标: " + t.Path_ + "  [ALE V4/V6]");
 
                 // find all targetable components (exe + exe-callable like dll)
                 List<string> files = new List<string>();
@@ -1744,20 +1859,7 @@ namespace Games8thTeamBlocker
                 {
                     files.Add(t.Path_);
                 }
-                else
-                {
-                    log.Fail("目标不存在: " + t.Path_);
-                    t.State = "✕ 不存在";
-                    failCount++;
-                    continue;
-                }
-
-                if (files.Count == 0)
-                {
-                    log.Warn(t.Name + " 未发现可限制组件（无 .exe / .dll 等）");
-                    t.State = "○ 未限制";
-                    continue;
-                }
+                else files.Add(t.Path_);
 
                 // optional Kaspersky scan (quiet if not installed)
                 if (Kaspersky.IsInstalled())
@@ -1779,25 +1881,13 @@ namespace Games8thTeamBlocker
 
                     if (isExe)
                     {
-                        // .exe -> firewall block (network layer)
-                        bool full = t.Strategy != "NET_OUT";
-                        bool ok = Firewall.AddBlockRule(file, "out");
-                        if (full) { bool okIn = Firewall.AddBlockRule(file, "in"); ok = ok && okIn; }
-                        if (ok)
-                        {
-                            okCount++;
-                            log.Ok("已封锁: " + fname + "  " + (full ? "[入站+出站]" : "[出站]") + "  (" + file + ")");
-                        }
-                        else
-                        {
-                            failCount++;
-                            targetOk = false;
-                            log.Fail("封锁失败: " + fname + "  (" + file + ")");
-                        }
+                        // EXE 的网络限制已经由目标目录/路径驱动规则覆盖。
+                        okCount++;
+                        log.Ok("驱动覆盖: " + fname + "  [ALE V4/V6]  (" + file + ")");
                     }
                     else
                     {
-                        // .dll etc -> icacls Deny Everyone access (no exe can load it)
+                        // 非 EXE 组件仍可用 ACL 限制加载，但不把 ACL 当作网络规则。
                         bool ok = Components.DenyAccess(file);
                         if (ok)
                         {
@@ -1818,10 +1908,13 @@ namespace Games8thTeamBlocker
             SaveConfig();
             int nFail = failCount;
             int nOk = okCount;
-            if (nFail == 0)
-                log.Ok("★ 限制完成：全部成功（" + okCount.ToString() + "/" + total.ToString() + " 个组件）");
+            if (nFail == 0 && driverOkCount == driverTotal && driverTotal > 0)
+                log.Ok("★ 驱动限制完成：已绑定 " + driverOkCount.ToString() + "/" +
+                       driverTotal.ToString() + " 个目标，覆盖 " + total.ToString() + " 个组件");
             else
-                log.Fail("★ 限制完成：成功 " + okCount.ToString() + " / 失败 " + nFail.ToString());
+                log.Warn("[UNVERIFIED] 驱动限制未完整完成：目标成功 " +
+                         driverOkCount.ToString() + "/" + driverTotal.ToString() +
+                         "，组件失败 " + nFail.ToString());
 
             // Start the process guard (watchdog) to block spawning of other software
             List<string> dirs = new List<string>();
@@ -1833,47 +1926,6 @@ namespace Games8thTeamBlocker
             if (dirs.Count > 0)
                 log.Step("实时守护已启动：受限软件启动的其他程序将被立即终止");
 
-            // ALE 层网络封锁：优先内核驱动（Games8thGuard.sys），
-            // 驱动不可用时自动回退到用户态 WFP（Fwpm* API）——
-            // 两者都能拦走本地代理 127.0.0.1:7890 的流量（ALE 层带进程身份）。
-            try
-            {
-                if (KernelDriver.IsLoaded())
-                {
-                    int pushed = 0;
-                    foreach (Target t in targets)
-                    {
-                        if (!t.Enabled) continue;
-                        if (KernelDriver.AddBlockedPath(t.Path_))
-                            pushed++;
-                    }
-                    log.Ok("内核驱动已生效：已下发 " + pushed.ToString() + " 个受限路径（ALE层网络封锁）");
-                }
-                else if (WfpEngine.IsAvailable())
-                {
-                    int wfpOk = 0;
-                    foreach (Target t in targets)
-                    {
-                        if (!t.Enabled) continue;
-                        if (Directory.Exists(t.Path_))
-                            wfpOk += WfpEngine.BlockDirectory(t.Path_, delegate(string m) { log.Warn(m); });
-                        else if (File.Exists(t.Path_) && Components.IsExe(t.Path_))
-                        {
-                            if (WfpEngine.Block(t.Path_)) wfpOk++;
-                        }
-                    }
-                    log.Ok("用户态 WFP 已生效：已封锁 " + wfpOk.ToString() + " 个可执行组件（免驱动/免签名，ALE层网络封锁）");
-                }
-                else
-                {
-                    log.Warn("内核驱动与用户态 WFP 均不可用（需要管理员权限）。已用防火墙/ACL 方案封锁；如需 ALE 层拦截请以管理员运行。");
-                }
-            }
-            catch (Exception ex)
-            {
-                log.Fail("[网络封锁] 通信失败: " + ex.Message);
-            }
-
             RefreshGrid();
         }
 
@@ -1881,7 +1933,7 @@ namespace Games8thTeamBlocker
         private void ClearAll()
         {
             if (MessageBox.Show(
-                "将删除本工具创建的全部防火墙规则（Games8th_Blocker 前缀），\n并恢复各目录内组件文件的访问权限（icacls /remove:d）。确认继续？",
+                "将清除驱动中的全部限制路径，并恢复各目录内组件文件的访问权限（icacls /remove:d）。确认继续？",
                 "确认解除限制", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
 
@@ -1893,37 +1945,28 @@ namespace Games8thTeamBlocker
                 // 0. stop process guard
                 ProcessGuard.Stop();
 
-                // 0b. clear kernel driver blocked paths (if loaded)
+                // 0b. clear kernel driver blocked paths and verify the list is empty
                 try
                 {
-                    if (KernelDriver.IsLoaded())
+                    KernelDriver.DriverStatus driver = KernelDriver.GetStatus();
+                    if (driver.IsLoaded && KernelDriver.ClearAll())
                     {
-                        KernelDriver.ClearAll();
-                        log.Ok("内核驱动限制已清除");
+                        string[] remaining;
+                        string error;
+                        if (KernelDriver.TryQueryBlockedPaths(out remaining, out error) && remaining.Length == 0)
+                            log.Ok("内核驱动限制已清除并回读确认为空");
+                        else
+                            log.Warn("[UNVERIFIED] 驱动清理后仍无法确认路径为空：" + error);
                     }
+                    else
+                        log.Warn("[UNVERIFIED] 无法清理驱动限制：" + driver.Summary);
                 }
-                catch { }
-
-                // 0c. clear user-mode WFP filters (driver-less fallback path)
-                try
+                catch (Exception ex)
                 {
-                    if (WfpEngine.IsAvailable())
-                    {
-                        List<string> wfpPaths = new List<string>();
-                        foreach (Target t in targets)
-                            wfpPaths.Add(t.Path_);
-                        int removed = WfpEngine.ClearAll(wfpPaths);
-                        if (removed > 0)
-                            log.Ok("用户态 WFP 限制已清除（" + removed.ToString() + " 条过滤器）");
-                    }
+                    log.Warn("[UNVERIFIED] 驱动清理异常：" + ex.Message);
                 }
-                catch { }
 
-                // 1. remove firewall rules
-                Firewall.RemoveAllRules();
-                log.Ok("★ 已删除全部 Games8th_Blocker 防火墙规则");
-
-                // 2. restore ACL on dll components (per target directory)
+                // 1. restore ACL on dll components (per target directory)
                 int restored = 0, restoreFail = 0;
                 foreach (Target t in targets)
                 {
@@ -1969,9 +2012,7 @@ namespace Games8thTeamBlocker
             bw.DoWork += delegate(object s, DoWorkEventArgs e)
             {
                 log.Step("开始任务: 核验状态");
-                List<string> rules = Firewall.ListRules();
-                bool wfpAvailable = false;
-                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
+                KernelDriver.DriverStatus driver = KernelDriver.GetStatus();
                 int okC = 0, failC = 0, skip = 0;
                 foreach (Target t in targets)
                 {
@@ -1983,22 +2024,35 @@ namespace Games8thTeamBlocker
 
                     if (files.Count == 0)
                     {
-                        t.State = "○ 未限制";
-                        log.Warn(t.Name + " 无组件（无封锁目标）");
+                        t.State = "⚠ 未验证";
+                        log.Warn("[UNVERIFIED] " + t.Name + " 无可核验组件");
+                        continue;
+                    }
+
+                    if (!driver.IsLoaded)
+                    {
+                        t.State = "⚠ 未验证";
+                        failC++;
+                        log.Warn("[UNVERIFIED] " + t.Name + "：驱动未就绪，不能确认网络限制（" +
+                                 driver.Summary + "）");
                         continue;
                     }
 
                     bool allBlocked = true;
                     int blockedN = 0;
+                    bool targetBound = (Directory.Exists(t.Path_) ||
+                                        (File.Exists(t.Path_) && Components.IsExe(t.Path_))) &&
+                                       KernelDriver.ContainsBlockedPath(t.Path_);
+                    if (!targetBound)
+                    {
+                        allBlocked = false;
+                        log.Warn("[UNVERIFIED] " + t.Name + "：驱动未回读到目标路径 " + t.Path_);
+                    }
                     foreach (string file in files)
                     {
                         if (Components.IsExe(file))
                         {
-                            bool full = t.Strategy != "NET_OUT";
-                            bool outOk = rules.Exists(x => string.Equals(x, Firewall.RuleName(file, "out"), StringComparison.OrdinalIgnoreCase));
-                            bool inOk = !full || rules.Exists(x => string.Equals(x, Firewall.RuleName(file, "in"), StringComparison.OrdinalIgnoreCase));
-                            bool wfpOk = wfpAvailable && WfpEngine.IsBlockedPath(file);
-                            if ((outOk && inOk) || wfpOk) blockedN++;
+                            if (targetBound) blockedN++;
                             else allBlocked = false;
                         }
                         else
@@ -2016,9 +2070,10 @@ namespace Games8thTeamBlocker
                     }
                     else
                     {
-                        t.State = "○ 未限制";
+                        t.State = "⚠ 未验证";
                         failC++;
-                        log.Fail(t.Name + " 未完全限制（" + blockedN.ToString() + "/" + files.Count.ToString() + " 组件）");
+                        log.Warn("[UNVERIFIED] " + t.Name + " 未完全限制（" +
+                                 blockedN.ToString() + "/" + files.Count.ToString() + " 组件）");
                     }
                 }
                 log.Ok("核验完成：已限制 " + okC.ToString() + " 目标，未限制 " + failC.ToString() + " 目标，跳过 " + skip.ToString());
@@ -2058,9 +2113,80 @@ namespace Games8thTeamBlocker
     // ===================== ENTRY =====================
     public static class Program
     {
+        private static bool IsAdministrator()
+        {
+            try
+            {
+                using (System.Security.Principal.WindowsIdentity id =
+                       System.Security.Principal.WindowsIdentity.GetCurrent())
+                {
+                    System.Security.Principal.WindowsPrincipal principal =
+                        new System.Security.Principal.WindowsPrincipal(id);
+                    return principal.IsInRole(
+                        System.Security.Principal.WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool TryRelaunchElevated(string[] args)
+        {
+            int ignoredExitCode;
+            return TryRelaunchElevated(args, out ignoredExitCode);
+        }
+
+        public static bool TryRelaunchElevated(string[] args, out int childExitCode)
+        {
+            childExitCode = 1;
+            if (IsAdministrator()) return true;
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = Application.ExecutablePath;
+                psi.UseShellExecute = true;
+                psi.Verb = "runas";
+                List<string> quoted = new List<string>();
+                foreach (string arg in args)
+                {
+                    string value = arg ?? "";
+                    quoted.Add("\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+                }
+                psi.Arguments = string.Join(" ", quoted.ToArray());
+                Process child = Process.Start(psi);
+                if (child == null) return false;
+                child.WaitForExit();
+                childExitCode = child.ExitCode;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         [STAThread]
         public static void Main(string[] args)
         {
+            if (!IsAdministrator())
+            {
+                int elevatedExitCode;
+                if (TryRelaunchElevated(args, out elevatedExitCode))
+                {
+                    Environment.ExitCode = elevatedExitCode;
+                    return;
+                }
+
+                if (args.Length > 0 && string.Equals(args[0], "cli",
+                                                       StringComparison.OrdinalIgnoreCase))
+                    Console.WriteLine("[UNVERIFIED] 管理员提权被取消或失败，未执行驱动操作");
+                Environment.ExitCode = 740;
+                return;
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length > 0 && args[0].ToLower() == "cli")
@@ -2080,48 +2206,84 @@ namespace Games8thTeamBlocker
         [DllImport("kernel32.dll")]
         private static extern bool FreeConsole();
 
-        private static bool BlockExecutable(string path, bool wfpAvailable)
+        private static bool RequireDriver(out KernelDriver.DriverStatus status)
         {
-            if (wfpAvailable)
-                return WfpEngine.Block(path);
+            status = KernelDriver.GetStatus();
+            if (status.IsLoaded)
+            {
+                Console.WriteLine("[OK] 驱动已验证：服务 RUNNING、设备句柄可用、QUERY_PATHS 响应正常");
+                return true;
+            }
 
-            return Firewall.AddBlockRule(path, "out") &&
-                   Firewall.AddBlockRule(path, "in");
+            Console.WriteLine("[UNVERIFIED] 强制驱动模式不可用：" + status.Summary);
+            Environment.ExitCode = 1;
+            return false;
         }
 
-        private static void BlockPath(string path, bool wfpAvailable)
+        private static bool BlockExecutable(string path)
+        {
+            bool ok = KernelDriver.AddBlockedPath(path) &&
+                      KernelDriver.ContainsBlockedPath(path);
+            if (!ok)
+            {
+                Console.WriteLine("  [UNVERIFIED] 驱动下发/回读失败: " +
+                                  path + "；" + KernelDriver.LastErrorMessage);
+                Environment.ExitCode = 1;
+                return false;
+            }
+
+            Console.WriteLine("  [OK] 驱动已绑定 EXE: " + path + " [ALE V4/V6]");
+            return true;
+        }
+
+        private static bool BlockPath(string path)
         {
             if (Directory.Exists(path))
             {
                 List<string> files = Components.ScanFolder(path);
                 Console.WriteLine("目录目标: " + path + "（" + files.Count.ToString() + " 个组件）");
+                bool driverOk = BlockExecutable(path);
+                int aclFailures = 0;
                 foreach (string file in files)
                 {
-                    if (Components.IsExe(file))
-                    {
-                        bool ok = BlockExecutable(file, wfpAvailable);
-                        Console.WriteLine((ok ? "  [OK] 封锁 " : "  [FAIL] 失败 ") + Path.GetFileName(file));
-                    }
-                    else
+                    if (!Components.IsExe(file))
                     {
                         bool ok = Components.DenyAccess(file);
-                        Console.WriteLine((ok ? "  [OK] 剥夺权限 " : "  [FAIL] 失败 ") + Path.GetFileName(file));
+                        Console.WriteLine((ok ? "  [OK] 剥夺权限 " : "  [FAIL] 失败 ") +
+                                          Path.GetFileName(file));
+                        if (!ok) aclFailures++;
                     }
                 }
-                return;
+                if (aclFailures != 0)
+                {
+                    Console.WriteLine("  [UNVERIFIED] 组件 ACL 失败: " +
+                                      aclFailures.ToString());
+                    Environment.ExitCode = 1;
+                }
+                return driverOk && aclFailures == 0;
             }
 
-            Console.WriteLine("封锁: " + path);
-            if (Components.IsExe(path))
+            if (File.Exists(path) && Components.IsExe(path))
             {
-                bool ok = BlockExecutable(path, wfpAvailable);
-                Console.WriteLine(ok ? "  [OK] 已封锁" : "  [FAIL] 失败");
+                Console.WriteLine("封锁: " + path);
+                return BlockExecutable(path);
             }
-            else
-            {
-                bool ok = Components.DenyAccess(path);
-                Console.WriteLine(ok ? "  [OK] 已剥夺权限" : "  [FAIL] 失败");
-            }
+
+            Console.WriteLine("[UNVERIFIED] 目标必须是现有目录或 EXE: " + path);
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        private static void PrintDriverStatus()
+        {
+            KernelDriver.DriverStatus status = KernelDriver.GetStatus();
+            Console.WriteLine("服务存在: " + (status.ServicePresent ? "是" : "否"));
+            Console.WriteLine("服务状态: " + (status.ServiceRunning ? "RUNNING" : "非 RUNNING"));
+            Console.WriteLine("设备句柄: " + (status.DeviceOpen ? "可用" : "不可用"));
+            Console.WriteLine("QUERY_PATHS: " + (status.IoctlResponsive ? "响应正常" : "失败"));
+            Console.WriteLine("驱动状态: " + (status.IsLoaded ? "VERIFIED" : "UNVERIFIED"));
+            Console.WriteLine("说明: " + status.Summary);
+            if (!status.IsLoaded) Environment.ExitCode = 1;
         }
 
         public static void Run(string[] args)
@@ -2156,48 +2318,91 @@ namespace Games8thTeamBlocker
             Console.WriteLine();
             if (args.Length < 2)
             {
-                Console.WriteLine("用法: Games8thBlocker.exe cli feilian|list|block|clear|verify|watch|guard");
+                Console.WriteLine("用法: Games8thBlocker.exe cli driver-status|feilian|list|block|clear|verify|watch|guard");
                 return;
             }
             string action = args[1].ToLower();
+            if (action == "driver-status")
+            {
+                PrintDriverStatus();
+                return;
+            }
             if (action == "block")
             {
                 if (args.Length < 3) { Console.WriteLine("用法: cli block <path>"); return; }
-                bool wfpAvailable = false;
-                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
-                Console.WriteLine("网络封锁路径: " + (wfpAvailable ? "用户态 WFP" : "Windows 防火墙"));
-                BlockPath(args[2], wfpAvailable);
+                KernelDriver.DriverStatus status;
+                if (!RequireDriver(out status)) return;
+                BlockPath(args[2]);
             }
             else if (action == "feilian" || action == "auto")
             {
-                bool wfpAvailable = false;
-                try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
+                KernelDriver.DriverStatus status;
+                if (!RequireDriver(out status)) return;
                 List<string> discovered = TargetDiscovery.FindFeilianTargets();
                 Console.WriteLine("自动发现飞连目标: " + discovered.Count.ToString());
                 if (discovered.Count == 0)
                 {
-                    Console.WriteLine("  [WARN] 当前机器未发现飞连进程、服务或安装目录");
+                    Console.WriteLine("  [UNVERIFIED] 当前机器未发现飞连进程、服务或安装目录");
+                    Environment.ExitCode = 2;
                     return;
                 }
-                Console.WriteLine("网络封锁路径: " + (wfpAvailable ? "用户态 WFP" : "Windows 防火墙"));
+                bool allOk = true;
                 foreach (string path in discovered)
-                    BlockPath(path, wfpAvailable);
+                    if (!BlockPath(path)) allOk = false;
+                if (!allOk) Environment.ExitCode = 1;
             }
             else if (action == "list")
             {
-                List<string> rules = Firewall.ListRules();
-                Console.WriteLine("当前规则 (" + rules.Count.ToString() + " 条):");
-                foreach (string r in rules) Console.WriteLine("  " + r);
+                KernelDriver.DriverStatus status;
+                if (!RequireDriver(out status)) return;
+                string[] paths;
+                string error;
+                if (!KernelDriver.TryQueryBlockedPaths(out paths, out error))
+                {
+                    Console.WriteLine("[UNVERIFIED] 无法查询驱动路径: " + error);
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                Console.WriteLine("驱动当前限制路径 (" + paths.Length.ToString() + " 条):");
+                foreach (string blockedPath in paths) Console.WriteLine("  " + blockedPath);
             }
             else if (action == "clear")
             {
-                Firewall.RemoveAllRules();
-                Console.WriteLine("  [OK] 已清除全部规则");
+                KernelDriver.DriverStatus status;
+                if (!RequireDriver(out status)) return;
+                if (KernelDriver.ClearAll())
+                {
+                    string[] remaining;
+                    string error;
+                    if (KernelDriver.TryQueryBlockedPaths(out remaining, out error) &&
+                        remaining.Length == 0)
+                        Console.WriteLine("  [OK] 驱动限制已清除并回读确认为空");
+                    else
+                    {
+                        Console.WriteLine("  [UNVERIFIED] 清理后无法确认路径为空: " + error);
+                        Environment.ExitCode = 1;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("  [UNVERIFIED] 驱动清理失败: " +
+                                      KernelDriver.LastErrorMessage);
+                    Environment.ExitCode = 1;
+                }
             }
             else if (action == "verify")
             {
-                Console.WriteLine("防火墙状态: " + (Firewall.IsFirewallEnabled() ? "开启" : "关闭"));
-                Console.WriteLine("规则数: " + Firewall.ListRules().Count.ToString());
+                KernelDriver.DriverStatus status;
+                if (!RequireDriver(out status)) return;
+                string[] paths;
+                string error;
+                if (!KernelDriver.TryQueryBlockedPaths(out paths, out error))
+                {
+                    Console.WriteLine("[UNVERIFIED] 驱动路径核验失败: " + error);
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                Console.WriteLine("驱动限制路径数: " + paths.Length.ToString());
                 Console.WriteLine("守护运行中: " + (ProcessGuard.IsRunning ? "是" : "否"));
             }
             else if (action == "watch" || action == "guard")
@@ -2205,20 +2410,27 @@ namespace Games8thTeamBlocker
                 // watch <path>: 实施限制 + 启动实时守护，持续阻止受限软件调用其他程序
                 if (args.Length < 3) { Console.WriteLine("用法: cli watch <路径>"); return; }
                 string p = args[2];
+                if (action == "watch")
+                {
+                    KernelDriver.DriverStatus status;
+                    if (!RequireDriver(out status)) return;
+                }
 
                 List<string> watchDirs = new List<string>();
                 if (Directory.Exists(p))
                 {
                     watchDirs.Add(p);
                     if (action == "watch")
-                    {
-                        bool wfpAvailable = false;
-                        try { wfpAvailable = WfpEngine.IsAvailable(); } catch { }
-                        BlockPath(p, wfpAvailable);
-                    }
+                        BlockPath(p);
                 }
                 else if (File.Exists(p))
                 {
+                    if (action == "watch" && !Components.IsExe(p))
+                    {
+                        Console.WriteLine("[UNVERIFIED] watch 目标必须是 EXE 或目录: " + p);
+                        Environment.ExitCode = 1;
+                        return;
+                    }
                     string dir = Path.GetDirectoryName(p);
                     if (!string.IsNullOrEmpty(dir)) watchDirs.Add(dir);
                 }

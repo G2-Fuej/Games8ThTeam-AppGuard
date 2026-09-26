@@ -18,6 +18,7 @@ namespace Games8thTeamBlocker
         private const uint RPC_C_AUTHN_DEFAULT = 0xFFFFFFFF;
         private const uint ERROR_SUCCESS = 0;
         private const uint FWP_E_ALREADY_EXISTS = 0x80320009;
+        private const uint FWP_E_FILTER_NOT_FOUND = 0x80320003;
         private const uint FWPM_FILTER_FLAG_PERSISTENT = 0x1;
         private const uint FWPM_PROVIDER_FLAG_PERSISTENT = 0x1;
 
@@ -255,7 +256,7 @@ namespace Games8thTeamBlocker
             if (string.IsNullOrEmpty(exePath)) return false;
             if (!File.Exists(exePath)) return false;
             if (!string.IsNullOrEmpty(SelfPath) &&
-                string.Equals(exePath, SelfPath, StringComparison.OrdinalIgnoreCase)) return true;
+                string.Equals(exePath, SelfPath, StringComparison.OrdinalIgnoreCase)) return false;
 
             IntPtr appId = IntPtr.Zero;
             uint st = FwpmGetAppIdFromFileName0(exePath, out appId);
@@ -272,7 +273,14 @@ namespace Games8thTeamBlocker
                     Guid v6Key = MakeFilterKey(exePath, "v6");
                     bool ok4 = AddFilter(h, LAYER_ALE_AUTH_CONNECT_V4, v4Key, appId);
                     bool ok6 = AddFilter(h, LAYER_ALE_AUTH_CONNECT_V6, v6Key, appId);
-                    return ok4 || ok6;
+                    if (!ok4 || !ok6)
+                    {
+                        DeleteFilter(h, v4Key);
+                        DeleteFilter(h, v6Key);
+                        return false;
+                    }
+                    return FilterMatchesAppId(h, v4Key, LAYER_ALE_AUTH_CONNECT_V4, appId) &&
+                           FilterMatchesAppId(h, v6Key, LAYER_ALE_AUTH_CONNECT_V6, appId);
                 }
                 finally
                 {
@@ -340,7 +348,9 @@ namespace Games8thTeamBlocker
                 Guid v6Key = MakeFilterKey(exePath, "v6");
                 bool ok1 = DeleteFilter(h, v4Key);
                 bool ok2 = DeleteFilter(h, v6Key);
-                return ok1 || ok2;
+                return ok1 && ok2 &&
+                       FilterIsAbsent(h, v4Key) &&
+                       FilterIsAbsent(h, v6Key);
             }
             finally
             {
@@ -348,37 +358,32 @@ namespace Games8thTeamBlocker
             }
         }
 
-        /// <summary>查询某个路径当前是否有本工具创建的 V4 过滤器</summary>
+        /// <summary>查询某个路径是否同时拥有绑定正确 AppId 的 V4/V6 过滤器</summary>
         public static bool IsBlockedPath(string exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return false;
+            if (!File.Exists(exePath)) return false;
+
+            IntPtr appId = IntPtr.Zero;
+            uint appStatus = FwpmGetAppIdFromFileName0(exePath, out appId);
+            if (appStatus != ERROR_SUCCESS || appId == IntPtr.Zero) return false;
+
             IntPtr h = IntPtr.Zero;
-            uint st = FwpmEngineOpen0(IntPtr.Zero, RPC_C_AUTHN_DEFAULT, IntPtr.Zero, IntPtr.Zero, out h);
-            if (st != ERROR_SUCCESS || h == IntPtr.Zero) return false;
             try
             {
+                uint st = FwpmEngineOpen0(IntPtr.Zero, RPC_C_AUTHN_DEFAULT, IntPtr.Zero, IntPtr.Zero, out h);
+                if (st != ERROR_SUCCESS || h == IntPtr.Zero) return false;
                 Guid v4Key = MakeFilterKey(exePath, "v4");
-                IntPtr filt4 = IntPtr.Zero;
-                st = FwpmFilterGetByKey0(h, ref v4Key, out filt4);
-                if (st == ERROR_SUCCESS)
-                {
-                    if (filt4 != IntPtr.Zero) FwpmFreeMemory0(ref filt4);
-                    return true;
-                }
-
                 Guid v6Key = MakeFilterKey(exePath, "v6");
-                IntPtr filt6 = IntPtr.Zero;
-                st = FwpmFilterGetByKey0(h, ref v6Key, out filt6);
-                if (st == ERROR_SUCCESS && filt6 != IntPtr.Zero)
-                    FwpmFreeMemory0(ref filt6);
-                return st == ERROR_SUCCESS;
+                return FilterMatchesAppId(h, v4Key, LAYER_ALE_AUTH_CONNECT_V4, appId) &&
+                       FilterMatchesAppId(h, v6Key, LAYER_ALE_AUTH_CONNECT_V6, appId);
             }
             finally
             {
-                FwpmEngineClose0(h);
+                if (h != IntPtr.Zero) FwpmEngineClose0(h);
+                FwpmFreeMemory0(ref appId);
             }
         }
-
 
         private static bool AddFilter(IntPtr h, Guid layer, Guid key, IntPtr appId)
         {
@@ -414,7 +419,14 @@ namespace Games8thTeamBlocker
 
                     ulong id = 0;
                     uint st = FwpmFilterAdd0(h, ref filter, IntPtr.Zero, out id);
-                    return st == ERROR_SUCCESS || st == FWP_E_ALREADY_EXISTS;
+                    if (st == FWP_E_ALREADY_EXISTS)
+                    {
+                        if (FilterMatchesAppId(h, key, layer, appId)) return true;
+                        DeleteFilter(h, key);
+                        st = FwpmFilterAdd0(h, ref filter, IntPtr.Zero, out id);
+                    }
+                    return st == ERROR_SUCCESS &&
+                           FilterMatchesAppId(h, key, layer, appId);
                 }
                 finally
                 {
@@ -430,7 +442,89 @@ namespace Games8thTeamBlocker
         private static bool DeleteFilter(IntPtr h, Guid key)
         {
             uint st = FwpmFilterDeleteByKey0(h, ref key);
-            return st == ERROR_SUCCESS;
+            return st == ERROR_SUCCESS || st == FWP_E_FILTER_NOT_FOUND;
+        }
+
+        private static bool FilterIsAbsent(IntPtr h, Guid key)
+        {
+            IntPtr filter = IntPtr.Zero;
+            uint st = FwpmFilterGetByKey0(h, ref key, out filter);
+            if (st == ERROR_SUCCESS)
+            {
+                if (filter != IntPtr.Zero) FwpmFreeMemory0(ref filter);
+                return false;
+            }
+            return st == FWP_E_FILTER_NOT_FOUND;
+        }
+
+        private static bool FilterMatchesAppId(
+            IntPtr h,
+            Guid key,
+            Guid expectedLayer,
+            IntPtr expectedAppId)
+        {
+            IntPtr filterPtr = IntPtr.Zero;
+            uint st = FwpmFilterGetByKey0(h, ref key, out filterPtr);
+            if (st != ERROR_SUCCESS || filterPtr == IntPtr.Zero) return false;
+
+            try
+            {
+                FWPM_FILTER0 filter =
+                    (FWPM_FILTER0)Marshal.PtrToStructure(filterPtr, typeof(FWPM_FILTER0));
+                if (filter.LayerKey != expectedLayer ||
+                    filter.SubLayerKey != FWPM_SUBLAYER_UNIVERSAL ||
+                    filter.Action.Type != FWP_ACTION_BLOCK ||
+                    filter.NumFilterConditions != 1 ||
+                    filter.FilterCondition == IntPtr.Zero)
+                    return false;
+
+                FWPM_FILTER_CONDITION0 condition =
+                    (FWPM_FILTER_CONDITION0)Marshal.PtrToStructure(
+                        filter.FilterCondition, typeof(FWPM_FILTER_CONDITION0));
+                if (condition.FieldKey != FWPM_CONDITION_ALE_APP_ID ||
+                    condition.MatchType != FWP_MATCH_EQUAL ||
+                    condition.ConditionValue.Type != FWP_BYTE_BLOB_TYPE ||
+                    condition.ConditionValue.ValuePtr == IntPtr.Zero)
+                    return false;
+
+                return AppIdEquals(expectedAppId, condition.ConditionValue.ValuePtr);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                FwpmFreeMemory0(ref filterPtr);
+            }
+        }
+
+        private static bool AppIdEquals(IntPtr leftPtr, IntPtr rightPtr)
+        {
+            if (leftPtr == IntPtr.Zero || rightPtr == IntPtr.Zero) return false;
+            try
+            {
+                FWP_BYTE_BLOB left =
+                    (FWP_BYTE_BLOB)Marshal.PtrToStructure(leftPtr, typeof(FWP_BYTE_BLOB));
+                FWP_BYTE_BLOB right =
+                    (FWP_BYTE_BLOB)Marshal.PtrToStructure(rightPtr, typeof(FWP_BYTE_BLOB));
+                if (left.Size == 0 || left.Size != right.Size ||
+                    left.Data == IntPtr.Zero || right.Data == IntPtr.Zero ||
+                    left.Size > 1024 * 1024)
+                    return false;
+
+                byte[] a = new byte[left.Size];
+                byte[] b = new byte[right.Size];
+                Marshal.Copy(left.Data, a, 0, a.Length);
+                Marshal.Copy(right.Data, b, 0, b.Length);
+                for (int i = 0; i < a.Length; i++)
+                    if (a[i] != b[i]) return false;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static Guid MakeFilterKey(string exePath, string suffix)
